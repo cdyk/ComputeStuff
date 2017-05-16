@@ -44,7 +44,7 @@ int main()
   std::vector<uint32_t> counts;
   std::vector<uint32_t> offsetsGold;
 
-  size_t N = 64;
+  size_t N = 4 * 4 * 32;
   {
     uint32_t* offsets_d;
     uint32_t* scratch_d;
@@ -58,12 +58,12 @@ int main()
     offsetsGold.resize(N + 1);
     offsetsGold[0] = 0;
     for (size_t i = 0; i < N; i++) {
-      counts[i] = i & 1;
+      counts[i] = 1;// i & 1;
       offsetsGold[i + 1] = offsetsGold[i] + counts[i];
     }
     assertSuccess(cudaMemcpy(counts_d, counts.data(), sizeof(uint32_t)*N, cudaMemcpyHostToDevice));
 
-    ComputeStuff::Scan::calcOffsets(offsets_d, sum_d, scratch_d, counts_d, N);
+    assertSuccess(ComputeStuff::Scan::calcOffsets(offsets_d, sum_d, scratch_d, counts_d, N));
 
     offsets.resize(N + 1);
     assertSuccess(cudaMemcpy(offsets.data(), offsets_d, sizeof(uint32_t)*(N+1), cudaMemcpyDeviceToHost));
