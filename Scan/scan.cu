@@ -2,18 +2,21 @@
 #include "Scan.h"
 
 #define WARPSIZE 32
+#define SCAN_WARPS 4
+
 namespace {
   
 
   __global__
-  __launch_bounds__(4 * WARPSIZE)
+  __launch_bounds__(SCAN_WARPS * WARPSIZE)
   void
   scan(uint32_t* output,
        const uint32_t* input,
        uint32_t N)
   {
     const uint32_t lane = threadIdx.x % WARPSIZE;
-    const uint32_t blockOffset = 4 * 4 * WARPSIZE * blockIdx.x;
+    const uint32_t warp = threadIdx.x / WARPSIZE;
+    const uint32_t blockOffset = 4 * SCAN_WARPS * WARPSIZE * blockIdx.x;
     const uint32_t threadOffset = blockOffset + 4 * threadIdx.x;
 
     // Fetch
@@ -31,7 +34,7 @@ namespace {
       a.w = 0;
     }
     uint32_t s = a.x + a.y + a.z + a.w;
-
+    uint32_t q = s;
     // Per-warp reduce
     {
       uint32_t t;
@@ -40,6 +43,17 @@ namespace {
       t = __shfl_up(s, 4); if (4 <= lane) s += t;
       t = __shfl_up(s, 8); if (8 <= lane) s += t;
       t = __shfl_up(s, 16); if (16 <= lane) s += t;
+    }
+    __shared__ uint32_t warpSum[SCAN_WARPS];
+    if (lane == (WARPSIZE - 1)) {
+      warpSum[warp] = s;
+    }
+    s -= q; // exclusive scan
+    __syncthreads();
+
+    #pragma unroll
+    for (uint32_t w = 0; w < SCAN_WARPS - 1; w++) {
+      if (w < warp) s += warpSum[w];
     }
 
     // Store
