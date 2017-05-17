@@ -57,18 +57,36 @@ int main()
     counts.resize(N);
     offsetsGold.resize(N + 1);
     offsetsGold[0] = 0;
-    for (size_t i = 0; i < N; i++) {
-      counts[i] = 1;// i & 1;
-      offsetsGold[i + 1] = offsetsGold[i] + counts[i];
-    }
-    assertSuccess(cudaMemcpy(counts_d, counts.data(), sizeof(uint32_t)*N, cudaMemcpyHostToDevice));
-
-    assertSuccess(ComputeStuff::Scan::calcOffsets(offsets_d, sum_d, scratch_d, counts_d, N));
-
     offsets.resize(N + 1);
-    assertSuccess(cudaMemcpy(offsets.data(), offsets_d, sizeof(uint32_t)*(N+1), cudaMemcpyDeviceToHost));
-    for (size_t i = 0; i < N + 1; i++) {
-      //assert(offsets[i] == offsetsGold[i]);
+
+    for (uint32_t modulo = 1; modulo < 10; modulo++) {
+      std::cerr << "N=" << N << ", modulo=" << modulo << std::endl;
+      for (size_t i = 0; i < N; i++) {
+        counts[i] = modulo==1 ? 1 : (i % modulo);
+        offsetsGold[i + 1] = offsetsGold[i] + counts[i];
+      }
+      assertSuccess(cudaMemcpy(counts_d, counts.data(), sizeof(uint32_t)*N, cudaMemcpyHostToDevice));
+
+      ComputeStuff::Scan::calcOffsets(offsets_d, scratch_d, counts_d, N);
+      assertSuccess(cudaGetLastError());
+      assertSuccess(cudaMemcpy(offsets.data(), offsets_d, sizeof(uint32_t)*(N + 1), cudaMemcpyDeviceToHost));
+      for (size_t i = 0; i < N + 1; i++) {
+        assert(offsets[i] == offsetsGold[i]);
+      }
+
+      ComputeStuff::Scan::calcOffsets(offsets_d, sum_d, scratch_d, counts_d, N);
+      assertSuccess(cudaGetLastError());
+
+      // Huh, cudaStreamSynchronize for stream 0 is needed for sum_h to be in sync.
+      // I thought stream 0 was in sync...
+      assertSuccess(cudaStreamSynchronize(0));
+      assert(*((volatile uint32_t*)sum_h) == offsetsGold.back());
+
+      assertSuccess(cudaMemcpy(offsets.data(), offsets_d, sizeof(uint32_t)*(N + 1), cudaMemcpyDeviceToHost));
+      for (size_t i = 0; i < N + 1; i++) {
+        assert(offsets[i] == offsetsGold[i]);
+      }
+
     }
 
     assertSuccess(cudaFree(counts_d));

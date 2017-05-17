@@ -7,10 +7,13 @@
 namespace {
   
 
+  template<bool inclusive, bool writeSum0, bool writeSum1>
   __global__
   __launch_bounds__(SCAN_WARPS * WARPSIZE)
   void
   scan(uint32_t* output,
+       uint32_t* sum0,
+       uint32_t* sum1,
        const uint32_t* input,
        uint32_t N)
   {
@@ -49,12 +52,21 @@ namespace {
     if (lane == (WARPSIZE - 1)) {
       warpSum[warp] = s;
     }
-    s -= q; // exclusive scan
+
     __syncthreads();
 
     #pragma unroll
     for (uint32_t w = 0; w < SCAN_WARPS - 1; w++) {
       if (w < warp) s += warpSum[w];
+    }
+
+    if (threadIdx.x == (SCAN_WARPS*WARPSIZE - 1)) {
+      if (writeSum0) *sum0 = s;
+      if (writeSum1) *sum1 = s;
+    }
+
+    if (inclusive == false) {
+      s -= q; // exclusive scan
     }
 
     // Store
@@ -85,25 +97,38 @@ size_t ComputeStuff::Scan::scratchByteSize<uint32_t>(size_t N)
   return sizeof(uint32_t)*42;
 }
 
-cudaError_t ComputeStuff::Scan::calcOffsets(uint32_t* offsets_d,
-                                            uint32_t* sum_d,
-                                            uint32_t* scratch_d,
-                                            const uint32_t* counts_d,
-                                            size_t N,
-                                            cudaStream_t  stream)
+void ComputeStuff::Scan::calcOffsets(uint32_t* offsets_d,
+                                     uint32_t* sum_d,
+                                     uint32_t* scratch_d,
+                                     const uint32_t* counts_d,
+                                     size_t N,
+                                     cudaStream_t stream)
 {
   if (N <= std::numeric_limits<uint32_t>::max()) {
     uint32_t n = static_cast<uint32_t>(N);
 
     uint32_t blockSize = 4 * WARPSIZE;
-    uint32_t blocks = (n + blockSize - 1) / blockSize;
+    uint32_t blocks = (n + 4 * blockSize - 1) / (4 * blockSize);
 
-    scan<<<blocks, blockSize, 0, stream >>>(offsets_d, counts_d, n);
-
-
-    return cudaGetLastError();
+    if (sum_d == nullptr) {
+      scan<false, true, false> << <blocks, blockSize, 0, stream >> > (offsets_d, offsets_d + N, sum_d, counts_d, n);
+    }
+    else {
+      scan<false, true, true> << <blocks, blockSize, 0, stream >> > (offsets_d, offsets_d + N, sum_d, counts_d, n);
+    }
   }
-  else {
-    return cudaErrorNotYetImplemented;
-  }
+}
+
+void ComputeStuff::Scan::calcOffsets(uint32_t* offsets_d,
+                                     uint32_t* scratch_d,
+                                     const uint32_t* counts_d,
+                                     size_t N,
+                                     cudaStream_t stream)
+{
+  calcOffsets(offsets_d,
+              nullptr,
+              scratch_d,
+              counts_d,
+              N,
+              stream);
 }
