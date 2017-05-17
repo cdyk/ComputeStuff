@@ -35,15 +35,16 @@ namespace {
     }
     uint32_t s = a.x + a.y + a.z + a.w;
     uint32_t q = s;
+
     // Per-warp reduce
-    {
-      uint32_t t;
-      t = __shfl_up(s, 1); if (1 <= lane) s += t;
-      t = __shfl_up(s, 2); if (2 <= lane) s += t;
-      t = __shfl_up(s, 4); if (4 <= lane) s += t;
-      t = __shfl_up(s, 8); if (8 <= lane) s += t;
-      t = __shfl_up(s, 16); if (16 <= lane) s += t;
+    #pragma unroll
+    for (uint32_t i = 1; i < WARPSIZE; i*=2) {
+      uint32_t t = __shfl_up(s, i);
+      if (i <= lane) {
+        s += t;
+      }
     }
+
     __shared__ uint32_t warpSum[SCAN_WARPS];
     if (lane == (WARPSIZE - 1)) {
       warpSum[warp] = s;
