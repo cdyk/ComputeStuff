@@ -167,20 +167,32 @@ namespace {
 }
 
 
-
-template<>
-size_t ComputeStuff::Scan::scratchByteSize<uint32_t>(size_t N)
+size_t ComputeStuff::Scan::levels(size_t N)
 {
   std::vector<size_t> levels;
   calcLevelSizes(levels, N);
 
-  size_t size = 0;
-  size_t alignment = 128/sizeof(uint32_t);
+  return levels.size();
+}
+
+
+template<typename T>
+size_t ComputeStuff::Scan::scratchByteSize(T N)
+{
+  std::vector<T> levels;
+  calcLevelSizes(levels, N);
+
+  T size = 0;
+  T alignment = 128/sizeof(uint32_t);
   for (auto & level : levels) {
     size += (level + alignment - 1) & ~(alignment - 1);
   }
   return sizeof(uint32_t)*size;
 }
+
+template size_t ComputeStuff::Scan::scratchByteSize<uint32_t>(uint32_t N);
+template size_t ComputeStuff::Scan::scratchByteSize<size_t>(size_t N);
+
 
 void ComputeStuff::Scan::calcOffsets(uint32_t* offsets_d,
                                      uint32_t* sum_d,
@@ -197,9 +209,9 @@ void ComputeStuff::Scan::calcOffsets(uint32_t* offsets_d,
 
     std::vector<uint32_t> offsets;
     offsets.push_back(0);
-    size_t alignment = 128 / sizeof(uint32_t);
+    uint32_t alignment = 128 / sizeof(uint32_t);
     for (size_t i = 0; i < levels.size(); i++) {
-      size_t levelSize = (levels[i] + alignment - 1) & ~(alignment - 1);
+      auto levelSize = (levels[i] + alignment - 1) & ~(alignment - 1);
       offsets.push_back(offsets[i] + levelSize);
     }
 

@@ -46,14 +46,16 @@ int main()
 
   std::vector<uint32_t> scratch;
 
-  size_t N = 2 * 4 * 4 * 32;
+//  size_t N = 2 * 4 * 4 * 32;
+
+  for (uint64_t N = 0; N < (uint64_t)(1 << 31 - 1); N = (N == 0 ? 1 : 7 * N))
   {
     uint32_t* offsets_d;
     uint32_t* scratch_d;
     uint32_t* counts_d;
 
     assertSuccess(cudaMalloc(&offsets_d, sizeof(uint32_t)*(N + 1)));
-    assertSuccess(cudaMalloc(&scratch_d, ComputeStuff::Scan::scratchByteSize<uint32_t>(N)));
+    assertSuccess(cudaMalloc(&scratch_d, ComputeStuff::Scan::scratchByteSize(N)));
     assertSuccess(cudaMalloc(&counts_d, sizeof(uint32_t)*N));
 
     counts.resize(N);
@@ -62,7 +64,7 @@ int main()
     offsets.resize(N + 1);
 
     for (uint32_t modulo = 1; modulo < 10; modulo++) {
-      std::cerr << "N=" << N << ", modulo=" << modulo << " scratch=" << ComputeStuff::Scan::scratchByteSize<uint32_t>(N) / sizeof(uint32_t) <<  std::endl;
+      std::cerr << "N=" << N << ", modulo=" << modulo << ", levels=" << ComputeStuff::Scan::levels(N) << ", scratch=" << ComputeStuff::Scan::scratchByteSize(N) / sizeof(uint32_t) <<  std::endl;
       for (size_t i = 0; i < N; i++) {
         counts[i] = modulo==1 ? 1 : (i % modulo);
         offsetsGold[i + 1] = offsetsGold[i] + counts[i];
@@ -73,13 +75,15 @@ int main()
       assertSuccess(cudaGetLastError());
 
 #if 1
-      scratch.resize(ComputeStuff::Scan::scratchByteSize<uint32_t>(N)/sizeof(uint32_t));
+      scratch.resize(ComputeStuff::Scan::scratchByteSize(N)/sizeof(uint32_t));
       assertSuccess(cudaMemcpy(scratch.data(), scratch_d, sizeof(uint32_t)*scratch.size(), cudaMemcpyDeviceToHost));
 #endif
 
       assertSuccess(cudaMemcpy(offsets.data(), offsets_d, sizeof(uint32_t)*(N + 1), cudaMemcpyDeviceToHost));
       for (size_t i = 0; i < N + 1; i++) {
-        assert(offsets[i] == offsetsGold[i]);
+        auto a = offsets[i];
+        auto b = offsetsGold[i];
+        assert(a == b);
       }
 
       ComputeStuff::Scan::calcOffsets(offsets_d, sum_d, scratch_d, counts_d, N);
