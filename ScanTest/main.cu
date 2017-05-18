@@ -44,7 +44,7 @@ int main()
   std::vector<uint32_t> counts;
   std::vector<uint32_t> offsetsGold;
 
-  size_t N = 4 * 4 * 32;
+  size_t N = 2 * 4 * 4 * 32;
   {
     uint32_t* offsets_d;
     uint32_t* scratch_d;

@@ -1,4 +1,5 @@
 #include <limits>
+#include <vector>
 #include "Scan.h"
 
 #define WARPSIZE 32
@@ -87,6 +88,18 @@ namespace {
     
   }
 
+
+  void calcLevelSizes(std::vector<size_t>& levels, size_t N)
+  {
+    size_t R = 4 * SCAN_WARPS*WARPSIZE; // Amount of reduction per level.
+    levels.clear();
+    while (1 < N) {
+      N = (N + R - 1) / R;
+      levels.push_back(N);
+    }
+    if (!levels.empty()) levels.pop_back(); // Remove to-one reduction that is always present.
+  }
+
 }
 
 
@@ -94,7 +107,15 @@ namespace {
 template<>
 size_t ComputeStuff::Scan::scratchByteSize<uint32_t>(size_t N)
 {
-  return sizeof(uint32_t)*42;
+  std::vector<size_t> levels;
+  calcLevelSizes(levels, N);
+
+  size_t size = 0;
+  size_t alignment = 128/sizeof(uint32_t);
+  for (auto & level : levels) {
+    size += (level + alignment - 1) & ~alignment;
+  }
+  return sizeof(uint32_t)*size;
 }
 
 void ComputeStuff::Scan::calcOffsets(uint32_t* offsets_d,
@@ -104,18 +125,34 @@ void ComputeStuff::Scan::calcOffsets(uint32_t* offsets_d,
                                      size_t N,
                                      cudaStream_t stream)
 {
+  std::vector<size_t> levels;
+  calcLevelSizes(levels, N);
+
+  std::vector<size_t> offsets;
+  offsets.push_back(0);
+  size_t alignment = 128 / sizeof(uint32_t);
+  for (size_t i = 0; i < levels.size(); i++) {
+    size_t levelSize = (levels[i] + alignment - 1) & ~alignment;
+    offsets.push_back(offsets[i] + levelSize);
+  }
+
   if (N <= std::numeric_limits<uint32_t>::max()) {
     uint32_t n = static_cast<uint32_t>(N);
 
-    uint32_t blockSize = 4 * WARPSIZE;
-    uint32_t blocks = (n + 4 * blockSize - 1) / (4 * blockSize);
+    if (levels.empty()) {
 
-    if (sum_d == nullptr) {
-      scan<false, true, false> << <blocks, blockSize, 0, stream >> > (offsets_d, offsets_d + N, sum_d, counts_d, n);
+      uint32_t blockSize = 4 * WARPSIZE;
+      uint32_t blocks = (n + 4 * blockSize - 1) / (4 * blockSize);
+
+      if (sum_d == nullptr) {
+        scan<false, true, false> << <blocks, blockSize, 0, stream >> > (offsets_d, offsets_d + N, sum_d, counts_d, n);
+      }
+      else {
+        scan<false, true, true> << <blocks, blockSize, 0, stream >> > (offsets_d, offsets_d + N, sum_d, counts_d, n);
+      }
+
     }
-    else {
-      scan<false, true, true> << <blocks, blockSize, 0, stream >> > (offsets_d, offsets_d + N, sum_d, counts_d, n);
-    }
+
   }
 }
 
