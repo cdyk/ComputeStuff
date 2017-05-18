@@ -4,3 +4,12 @@
 *.ptx
 *.cubin
 *.fatbin
+*.vcxproj.user
+*.pdb
+*.VC.db
+*.VC.opendb
+.vs
+.gitattributes
+Scan/x64
+ScanTest/x64
+x64
