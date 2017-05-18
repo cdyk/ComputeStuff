@@ -1,5 +1,6 @@
 #include <limits>
 #include <vector>
+#include <algorithm>
 #include "Scan.h"
 
 #define WARPSIZE 32
@@ -146,10 +147,10 @@ namespace {
     
   }
 
-
-  void calcLevelSizes(std::vector<size_t>& levels, size_t N)
+  template<typename T>
+  void calcLevelSizes(std::vector<T>& levels, T N)
   {
-    size_t R = 4 * SCAN_WARPS*WARPSIZE; // Amount of reduction per level.
+    T R = 4 * SCAN_WARPS*WARPSIZE; // Amount of reduction per level.
     levels.clear();
     while (1 < N) {
       N = (N + R - 1) / R;
@@ -183,20 +184,21 @@ void ComputeStuff::Scan::calcOffsets(uint32_t* offsets_d,
                                      size_t N,
                                      cudaStream_t stream)
 {
-  std::vector<size_t> levels;
-  calcLevelSizes(levels, N);
-
-  std::vector<size_t> offsets;
-  offsets.push_back(0);
-  size_t alignment = 128 / sizeof(uint32_t);
-  for (size_t i = 0; i < levels.size(); i++) {
-    size_t levelSize = (levels[i] + alignment - 1) & ~alignment;
-    offsets.push_back(offsets[i] + levelSize);
-  }
-
   if (N <= std::numeric_limits<uint32_t>::max()) {
-    uint32_t blockSize = SCAN_WARPS * WARPSIZE;
     uint32_t n = static_cast<uint32_t>(N);
+
+    std::vector<uint32_t> levels;
+    calcLevelSizes(levels, n);
+
+    std::vector<uint32_t> offsets;
+    offsets.push_back(0);
+    size_t alignment = 128 / sizeof(uint32_t);
+    for (size_t i = 0; i < levels.size(); i++) {
+      size_t levelSize = (levels[i] + alignment - 1) & ~alignment;
+      offsets.push_back(offsets[i] + levelSize);
+    }
+
+    uint32_t blockSize = SCAN_WARPS * WARPSIZE;
 
     if (levels.empty()) {
 
@@ -217,16 +219,20 @@ void ComputeStuff::Scan::calcOffsets(uint32_t* offsets_d,
 
     }
     else {
-
-      reduce<<<static_cast<uint32_t>(levels[0]), blockSize, 0, stream>>>(scratch_d + offsets[0],
-                                                                         counts_d,
-                                                                         n);
-      for (size_t i = 1; i < levels.size(); i++) {
-        reduce<<<static_cast<uint32_t>(levels[i]), blockSize, 0, stream>>>(scratch_d + offsets[i],
-                                                                           scratch_d + offsets[i - 1],
-                                                                           levels[i - 1]);
+      uint32_t L = static_cast<uint32_t>(levels.size());
+        
+      // From input, populate level 0
+      reduce << <levels[0], blockSize, 0, stream >> > (scratch_d + offsets[0],
+                                                       counts_d,
+                                                       n);
+      // From level i-1, populate level i, up to including L-1.
+      for (uint32_t i = 1; i < L; i++) {
+        reduce << <levels[i], blockSize, 0, stream >> > (scratch_d + offsets[i],
+                                                         scratch_d + offsets[i - 1],
+                                                         levels[i - 1]);
       }
 
+      // Run scan on last level L-1, and write off total sum to last element of output (offsets_d+N).
       auto l = levels.size() - 1;
       if (sum_d == nullptr) {
         scan<false, true, false><<<1, blockSize, 0, stream>>>(scratch_d + offsets[l],
@@ -242,6 +248,22 @@ void ComputeStuff::Scan::calcOffsets(uint32_t* offsets_d,
                                                              scratch_d + offsets[l],
                                                              levels[l]);
       }
+      
+      // Now, level L-1 is processed, scan levels L-2...0 pulling start offsets from the level above.
+      for (int i = (int)L - 2; 0 <= i; i--) {
+        scan<false, false, false> << <levels[i], blockSize, 0, stream >> > (scratch_d + offsets[l],
+                                                                            nullptr,
+                                                                            nullptr,
+                                                                            scratch_d + offsets[l],
+                                                                            levels[l]);
+      }
+      // Now, level 0 is processed, scan input writing to output, pulling offsets from level 0.
+
+      scan<false, false, false> << <levels[0], blockSize, 0, stream >> > (offsets_d,
+                                                                          nullptr,
+                                                                          nullptr,
+                                                                          counts_d,
+                                                                          n);
 
 
     }
