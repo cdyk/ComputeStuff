@@ -8,6 +8,65 @@
 namespace {
   
 
+  __global__
+  __launch_bounds__(SCAN_WARPS * WARPSIZE)
+  void
+  reduce(uint32_t* output,
+         const uint32_t* input,
+         uint32_t N)
+  {
+    const uint32_t lane = threadIdx.x % WARPSIZE;
+    const uint32_t warp = threadIdx.x / WARPSIZE;
+    const uint32_t threadOffset = 4 * (SCAN_WARPS * WARPSIZE * blockIdx.x + threadIdx.x);
+
+    // Fetch
+    uint4 a;
+    if (threadOffset + 3 < N) {
+      a = *reinterpret_cast<const uint4*>(input + threadOffset);
+    }
+    else if (N <= threadOffset) {
+      a = make_uint4(0, 0, 0, 0);
+    }
+    else {
+      a.x = input[threadOffset];
+      a.y = threadOffset + 1 < N ? input[threadOffset + 1] : 0;
+      a.z = threadOffset + 2 < N ? input[threadOffset + 2] : 0;
+      a.w = 0;
+    }
+    uint32_t s = a.x + a.y + a.z + a.w;
+
+    // Per-warp reduce
+    #pragma unroll
+    for (uint32_t i = 1; i < WARPSIZE; i *= 2) {
+      uint32_t t = __shfl_up(s, i);
+      if (i <= lane) {
+        s += t;
+      }
+    }
+
+    __shared__ uint32_t warpSum[SCAN_WARPS];
+    if (lane == (WARPSIZE - 1)) {
+      warpSum[warp] = s;
+    }
+
+    __syncthreads();
+
+    // Aggregate warp sums and write total.
+    if (threadIdx.x == 0) {
+      auto a = warpSum[0];
+
+      #pragma unroll
+      for (uint32_t i = 1; i < SCAN_WARPS; i++) {
+        a += warpSum[i];
+      }
+
+      output[blockIdx.x] = a;
+    }
+
+  }
+
+
+
   template<bool inclusive, bool writeSum0, bool writeSum1>
   __global__
   __launch_bounds__(SCAN_WARPS * WARPSIZE)
@@ -20,8 +79,7 @@ namespace {
   {
     const uint32_t lane = threadIdx.x % WARPSIZE;
     const uint32_t warp = threadIdx.x / WARPSIZE;
-    const uint32_t blockOffset = 4 * SCAN_WARPS * WARPSIZE * blockIdx.x;
-    const uint32_t threadOffset = blockOffset + 4 * threadIdx.x;
+    const uint32_t threadOffset = 4 * (SCAN_WARPS * WARPSIZE * blockIdx.x + threadIdx.x);
 
     // Fetch
     uint4 a;
@@ -137,21 +195,57 @@ void ComputeStuff::Scan::calcOffsets(uint32_t* offsets_d,
   }
 
   if (N <= std::numeric_limits<uint32_t>::max()) {
+    uint32_t blockSize = SCAN_WARPS * WARPSIZE;
     uint32_t n = static_cast<uint32_t>(N);
 
     if (levels.empty()) {
 
-      uint32_t blockSize = 4 * WARPSIZE;
-      uint32_t blocks = (n + 4 * blockSize - 1) / (4 * blockSize);
-
       if (sum_d == nullptr) {
-        scan<false, true, false> << <blocks, blockSize, 0, stream >> > (offsets_d, offsets_d + N, sum_d, counts_d, n);
+        scan<false, true, false> <<<1, blockSize, 0, stream>>> (offsets_d,
+                                                                offsets_d + N,
+                                                                sum_d,
+                                                                counts_d,
+                                                                n);
       }
       else {
-        scan<false, true, true> << <blocks, blockSize, 0, stream >> > (offsets_d, offsets_d + N, sum_d, counts_d, n);
+        scan<false, true, true> <<<1, blockSize, 0, stream>>> (offsets_d,
+                                                               offsets_d + N,
+                                                               sum_d,
+                                                               counts_d,
+                                                               n);
       }
 
     }
+    else {
+
+      reduce<<<static_cast<uint32_t>(levels[0]), blockSize, 0, stream>>>(scratch_d + offsets[0],
+                                                                         counts_d,
+                                                                         n);
+      for (size_t i = 1; i < levels.size(); i++) {
+        reduce<<<static_cast<uint32_t>(levels[i]), blockSize, 0, stream>>>(scratch_d + offsets[i],
+                                                                           scratch_d + offsets[i - 1],
+                                                                           levels[i - 1]);
+      }
+
+      auto l = levels.size() - 1;
+      if (sum_d == nullptr) {
+        scan<false, true, false><<<1, blockSize, 0, stream>>>(scratch_d + offsets[l],
+                                                              offsets_d + N,
+                                                              nullptr,
+                                                              scratch_d + offsets[l],
+                                                              levels[l]);
+      }
+      else {
+        scan<false, true, true><<<1, blockSize, 0, stream>>>(scratch_d + offsets[l],
+                                                             offsets_d + N,
+                                                             sum_d,
+                                                             scratch_d + offsets[l],
+                                                             levels[l]);
+      }
+
+
+    }
+
 
   }
 }
