@@ -201,11 +201,11 @@ void runPerf(uint32_t N)
 
   // Run ComputeStuff scan
   for (uint32_t i = 0; i < 10; i++) {  // warm-up
-    ComputeStuff::Scan::exclusiveScan(output_d, scratch_d, input_d, N);
+    ComputeStuff::Scan::exclusiveScan(output_d, scratch_d, input_d, N, stream);
   }
   cudaEventRecord(startB, stream);
   for (uint32_t i = 0; i < 50; i++) {  // perf-run
-    ComputeStuff::Scan::exclusiveScan(output_d, scratch_d, input_d, N);
+    ComputeStuff::Scan::exclusiveScan(output_d, scratch_d, input_d, N, stream);
   }
   cudaEventRecord(stopB, stream);
 
@@ -214,8 +214,8 @@ void runPerf(uint32_t N)
   assertSuccess(cudaEventElapsedTime(&elapsedA, startA, stopA));
   assertSuccess(cudaEventElapsedTime(&elapsedB, startB, stopB));
 
-  std::cerr << "N=" << N << ",\tthrust=" << (elapsedA / 50.0) << "ms,\tComputeStuff=" << (elapsedB / 50.0) << "ms,\tratio CS/thrust=" << (elapsedB/elapsedA) << std::endl;
- 
+  std::cerr << "|" << N << "|" << (elapsedA / 50.0) << "ms|" << (elapsedB / 50.0) << "ms|" << (elapsedB / elapsedA) << "|" << std::endl;
+
 
   assertSuccess(cudaFree(input_d));
   assertSuccess(cudaFree(scratch_d));
@@ -286,6 +286,8 @@ int main(int argc, char** argv)
   }
 
   if (perf) {
+    std::cerr << "| N | thrust | ComputeStuff | ratio |" << std::endl;
+    std::cerr << "|---|--------|--------------|-------|" << std::endl;
     for (uint64_t N = 1; N < (uint64_t)(props.totalGlobalMem / 10); N = 3 * N + N / 3) {
       runPerf(static_cast<uint32_t>(N));
     }
