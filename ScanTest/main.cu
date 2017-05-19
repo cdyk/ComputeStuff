@@ -1,3 +1,6 @@
+// This file is part of ComputeStuff copyright (C) 2017 Christopher Dyken.
+// Released under the MIT license, please see LICENSE file for details.
+
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 
@@ -10,17 +13,6 @@
 #include <cassert>
 
 #include <Scan.h>
-
-
-#include <stdio.h>
-
-cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size);
-
-__global__ void addKernel(int *c, const int *a, const int *b)
-{
-    int i = threadIdx.x;
-    c[i] = a[i] + b[i];
-}
 
 namespace {
 
@@ -53,7 +45,7 @@ void runTest(uint32_t N)
   assertSuccess(cudaMalloc(&counts_d, sizeof(uint32_t)*N));
 
   for (uint32_t modulo = 1; modulo < 10; modulo++) {
-    std::cerr << "N=" << N << ", modulo=" << modulo << ", levels=" << ComputeStuff::Scan::levels(N) << ", scratch=" << ComputeStuff::Scan::scratchByteSize(N) / sizeof(uint32_t) << std::endl;
+    std::cerr << "N=" << N << ", modulo=" << modulo << ", scratch=" << ComputeStuff::Scan::scratchByteSize(N) / sizeof(uint32_t) << std::endl;
 
     offsetsGold[0] = 0;
     for (size_t i = 0; i < N; i++) {
@@ -168,7 +160,7 @@ void runPerf(uint32_t N)
 int main(int argc, char** argv)
 {
   bool perf = true;
-  bool test = false;
+  bool test = true;
   for (int i = 1; i < argc; i++) {
     if (strcmp("--perf", argv[i])) {
       perf = true;
