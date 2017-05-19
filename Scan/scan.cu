@@ -51,12 +51,12 @@ namespace {
 
     if (levels.empty()) {
 
-      ComputeStuff::Scan::Kernels::scan<false, extraElement, writeSum, false><<<1, blockSize, 0, stream >>>(output_d,
-                                                                                                            output_d + N,
-                                                                                                            sum_d,
-                                                                                                            input_d,
-                                                                                                            nullptr,
-                                                                                                            N);
+      ComputeStuff::Scan::Kernels::scan<inclusive, extraElement, writeSum, false><<<1, blockSize, 0, stream >>>(output_d,
+                                                                                                                output_d + N,
+                                                                                                                sum_d,
+                                                                                                                input_d,
+                                                                                                                nullptr,
+                                                                                                                N);
 
     }
     else {

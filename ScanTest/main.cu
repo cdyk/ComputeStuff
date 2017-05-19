@@ -16,6 +16,14 @@
 
 namespace {
 
+  bool test = true;
+  bool perf = false;
+
+  bool inclusiveScan = true;
+  bool exclusiveScan = false;
+  bool offsetTable = false;
+
+
   void logFailure(cudaError_t error, const char *file, int line)
   {
     std::cerr << file << '@' << line << ": CUDA error: " << cudaGetErrorName(error) << std::endl;
@@ -24,68 +32,133 @@ namespace {
 }
 #define assertSuccess(a) do { cudaError_t rv = (a); if(rv != cudaSuccess) logFailure(rv, __FILE__, __LINE__); } while(0)
 
+void assertMatching(const uint32_t* result, const uint32_t* gold, uint32_t N)
+{
+  for (size_t i = 0; i < N; i++) {
+    auto a = result[i];
+    auto b = gold[i];
+    if (a != b) {
+      std::cerr << "a=" << a << " !=  b=" << b << std::endl;
+      abort();
+    }
+  }
+}
 
 void runTest(uint32_t N)
 {
   std::vector<uint32_t> offsets(N + 1);
   std::vector<uint32_t> counts(N);
   std::vector<uint32_t> offsetsGold(N + 1);
-  std::vector<uint32_t> scratch;
 
-  uint32_t* sum_h, * sum_d;
+  uint32_t* sum_h, *sum_d;
   assertSuccess(cudaHostAlloc(&sum_h, sizeof(uint32_t), cudaHostAllocMapped));
   assertSuccess(cudaHostGetDevicePointer(&sum_d, sum_h, 0));
 
 
-  uint32_t* offsets_d;
+  uint32_t* output_d;
   uint32_t* scratch_d;
-  uint32_t* counts_d;
-  assertSuccess(cudaMalloc(&offsets_d, sizeof(uint32_t)*(N + 1)));
+  uint32_t* input_d;
+  assertSuccess(cudaMalloc(&output_d, sizeof(uint32_t)*(N + 1)));
   assertSuccess(cudaMalloc(&scratch_d, ComputeStuff::Scan::scratchByteSize(N)));
-  assertSuccess(cudaMalloc(&counts_d, sizeof(uint32_t)*N));
+  assertSuccess(cudaMalloc(&input_d, sizeof(uint32_t)*N));
 
   for (uint32_t modulo = 1; modulo < 10; modulo++) {
     std::cerr << "N=" << N << ", modulo=" << modulo << ", scratch=" << ComputeStuff::Scan::scratchByteSize(N) / sizeof(uint32_t) << std::endl;
 
+    // Set up problem
     offsetsGold[0] = 0;
     for (size_t i = 0; i < N; i++) {
       counts[i] = modulo == 1 ? 1 : (i % modulo);
       offsetsGold[i + 1] = offsetsGold[i] + counts[i];
     }
-    assertSuccess(cudaMemcpy(counts_d, counts.data(), sizeof(uint32_t)*N, cudaMemcpyHostToDevice));
+    assertSuccess(cudaMemcpy(input_d, counts.data(), sizeof(uint32_t)*N, cudaMemcpyHostToDevice));
 
-    ComputeStuff::Scan::calcOffsets(offsets_d, scratch_d, counts_d, N);
-    assertSuccess(cudaStreamSynchronize(0));
-    assertSuccess(cudaGetLastError());
 
-#if 0
-    scratch.resize(ComputeStuff::Scan::scratchByteSize(N) / sizeof(uint32_t));
-    assertSuccess(cudaMemcpy(scratch.data(), scratch_d, sizeof(uint32_t)*scratch.size(), cudaMemcpyDeviceToHost));
-#endif
+    // Inclusive scan
+    // --------------
 
-    assertSuccess(cudaMemcpy(offsets.data(), offsets_d, sizeof(uint32_t)*(N + 1), cudaMemcpyDeviceToHost));
-    for (size_t i = 0; i < N + 1; i++) {
-      auto a = offsets[i];
-      auto b = offsetsGold[i];
-      assert(a == b);
+    if (inclusiveScan) {
+
+      // Disjoint input and output
+      assertSuccess(cudaMemset(output_d, ~0, N * sizeof(uint32_t)));
+      ComputeStuff::Scan::inclusiveScan(output_d, scratch_d, input_d, N);
+      assertSuccess(cudaStreamSynchronize(0));
+      assertSuccess(cudaMemcpy(offsets.data(), output_d, sizeof(uint32_t)*N, cudaMemcpyDeviceToHost));
+      assertMatching(offsets.data(), offsetsGold.data() + 1, N);
     }
 
-    ComputeStuff::Scan::calcOffsets(offsets_d, sum_d, scratch_d, counts_d, N);
-    assertSuccess(cudaStreamSynchronize(0));
-    assertSuccess(cudaGetLastError());
+    // Exclusive scan
+    // --------------
 
-    assert(*((volatile uint32_t*)sum_h) == offsetsGold.back());
+    if (exclusiveScan) {
 
-    assertSuccess(cudaMemcpy(offsets.data(), offsets_d, sizeof(uint32_t)*(N + 1), cudaMemcpyDeviceToHost));
+      // Disjoint input and output
+      assertSuccess(cudaMemset(output_d, ~0, N * sizeof(uint32_t)));
+      ComputeStuff::Scan::exclusiveScan(output_d, scratch_d, input_d, N);
+      assertSuccess(cudaStreamSynchronize(0));
+      assertSuccess(cudaMemcpy(offsets.data(), output_d, sizeof(uint32_t)*N, cudaMemcpyDeviceToHost));
+      assertMatching(offsets.data(), offsetsGold.data(), N);
 
-    for (size_t i = 0; i < N + 1; i++) {
-      assert(offsets[i] == offsetsGold[i]);
+      // In-place
+      assertSuccess(cudaMemcpy(output_d, input_d, sizeof(uint32_t)*N, cudaMemcpyDeviceToDevice));
+      ComputeStuff::Scan::exclusiveScan(output_d, scratch_d, output_d, N);
+      assertSuccess(cudaStreamSynchronize(0));
+      assertSuccess(cudaMemcpy(offsets.data(), output_d, sizeof(uint32_t)*N, cudaMemcpyDeviceToHost));
+      assertMatching(offsets.data(), offsetsGold.data(), N);
+
     }
+
+    // Offset table
+    // ------------
+
+    if (offsetTable) {
+
+      // Offset without sum, disjoint input and output
+      assertSuccess(cudaMemset(output_d, ~0, (N + 1) * sizeof(uint32_t)));
+      ComputeStuff::Scan::calcOffsets(output_d, scratch_d, input_d, N);
+      assertSuccess(cudaStreamSynchronize(0));
+      assertSuccess(cudaMemcpy(offsets.data(), output_d, sizeof(uint32_t)*(N + 1), cudaMemcpyDeviceToHost));
+      assertMatching(offsets.data(), offsetsGold.data(), N + 1);
+
+      // Offset without sum, in-place
+      assertSuccess(cudaMemcpy(output_d, input_d, sizeof(uint32_t)*N, cudaMemcpyDeviceToDevice));
+      assert(cudaMemset(output_d + N, ~0, sizeof(uint32_t)));
+      ComputeStuff::Scan::calcOffsets(output_d, scratch_d, output_d, N);
+      assertSuccess(cudaStreamSynchronize(0));
+      assertSuccess(cudaMemcpy(offsets.data(), output_d, sizeof(uint32_t)*(N + 1), cudaMemcpyDeviceToHost));
+      assertMatching(offsets.data(), offsetsGold.data(), N + 1);
+
+      // Offset with sum, disjoint input and output
+      assert(cudaMemset(output_d, ~0, (N + 1) * sizeof(uint32_t)));
+      *sum_h = ~0;
+      ComputeStuff::Scan::calcOffsets(output_d, sum_d, scratch_d, input_d, N);
+      assertSuccess(cudaStreamSynchronize(0));
+      assertSuccess(cudaMemcpy(offsets.data(), output_d, sizeof(uint32_t)*(N + 1), cudaMemcpyDeviceToHost));
+      assertMatching(offsets.data(), offsetsGold.data(), N + 1);
+      if (*((volatile uint32_t*)sum_h) != offsetsGold.back()) {
+        std::cerr << "Wrong sum." << std::endl;
+        abort();
+      }
+
+      // Offset with sum, in-place
+      assertSuccess(cudaMemcpy(output_d, input_d, sizeof(uint32_t)*N, cudaMemcpyDeviceToDevice));
+      assertSuccess(cudaMemset(output_d + N, ~0, sizeof(uint32_t)));
+      *sum_h = ~0;
+      ComputeStuff::Scan::calcOffsets(output_d, sum_d, scratch_d, output_d, N);
+      assertSuccess(cudaStreamSynchronize(0));
+      assertSuccess(cudaMemcpy(offsets.data(), output_d, sizeof(uint32_t)*(N + 1), cudaMemcpyDeviceToHost));
+      assertMatching(offsets.data(), offsetsGold.data(), N + 1);
+      if (*((volatile uint32_t*)sum_h) != offsetsGold.back()) {
+        std::cerr << "Wrong sum." << std::endl;
+        abort();
+      }
+    }
+
   }
 
-  assertSuccess(cudaFree(counts_d));
+  assertSuccess(cudaFree(input_d));
   assertSuccess(cudaFree(scratch_d));
-  assertSuccess(cudaFree(offsets_d));
+  assertSuccess(cudaFree(output_d));
   assertSuccess(cudaFreeHost(sum_h));
 }
 
@@ -159,8 +232,6 @@ void runPerf(uint32_t N)
 
 int main(int argc, char** argv)
 {
-  bool perf = true;
-  bool test = true;
   for (int i = 1; i < argc; i++) {
     if (strcmp("--perf", argv[i])) {
       perf = true;
@@ -174,12 +245,32 @@ int main(int argc, char** argv)
     else if (strcmp("--no-test", argv[i])) {
       test = false;
     }
+    else if (strcmp("--inclusive-scan", argv[i])) {
+      inclusiveScan = true;
+    }
+    else if (strcmp("--no-inclusive-scan", argv[i])) {
+      inclusiveScan = false;
+    }
+    else if (strcmp("--exclusive-scan", argv[i])) {
+      exclusiveScan = true;
+    }
+    else if (strcmp("--no-exclusive-scan", argv[i])) {
+      exclusiveScan = false;
+    }
+    else if (strcmp("--offset-table", argv[i])) {
+      offsetTable = true;
+    }
+    else if (strcmp("--no-offset-table", argv[i])) {
+      offsetTable = false;
+    }
   }
+
+  std::cerr << "test=" << test << ", perf=" << perf << std::endl;
+  std::cerr << "inclusive-scan=" << inclusiveScan << ", exclusive-scan=" << exclusiveScan << ", offset-table=" << offsetTable << std::endl;
 
   assertSuccess(cudaSetDevice(0));
 
   if (test) {
-    runTest(static_cast<uint32_t>(0u));
     for (uint64_t N = 1; N < (uint64_t)(1 << 31 - 1); N = (N == 0 ? 1 : 7 * N + N / 3))
     {
       runTest(static_cast<uint32_t>(N));
