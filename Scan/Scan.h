@@ -14,18 +14,91 @@ namespace ComputeStuff {
     /// \returns  Number of bytes for the scratch buffer.
     uint32_t scratchByteSize(uint32_t N);
 
+    /// Calculate the exclusive prefix-sum (scan)
+    ///
+    /// If input is
+    ///   [a, b, c, d],
+    /// then the result is
+    ///   [0, a, a+b, a+b+c].
+    ///
+    /// \note Supports in-place operation, i.e. output_d == input_d.
+    /// 
+    /// \param output_d Device memory pointer to where the result of N elements is stored.
+    /// \param scratch_d Device memory pointer to scratch area, size given by \ref scratchByteSize.
+    /// \param input_d Device memory pointer to the N input elements.
+    /// \param N The number of input elements.
+    /// \param stream The CUDA stream to use.
     void exclusiveScan(uint32_t* output_d,
                        uint32_t* scratch_d,
                        const uint32_t* input_d,
                        uint32_t N,
                        cudaStream_t stream = (cudaStream_t)0);
 
+    /// Calculate the inclusive prefix-sum (scan)
+    ///
+    /// If input is
+    ///   [a, b, c, d],
+    /// then the result is
+    ///   [a, a+b, a+b+c, a+b+c+d].
+    ///
+    /// \note Supports in-place operation, i.e. output_d == input_d.
+    /// 
+    /// \param output_d Device memory pointer to where the result of N elements is stored.
+    /// \param scratch_d Device memory pointer to scratch area, size given by \ref scratchByteSize.
+    /// \param input_d Device memory pointer to the N input elements.
+    /// \param N The number of input elements.
+    /// \param stream The CUDA stream to use.
     void inclusiveScan(uint32_t* output_d,
                        uint32_t* scratch_d,
                        const uint32_t* input_d,
                        uint32_t N,
                        cudaStream_t stream = (cudaStream_t)0);
 
+    /// Calculate an offset-table (exclusive prefix-sum with total concatenated on end).
+    ///
+    /// If input is
+    ///   [a, b, c, d],
+    /// then the result is
+    ///   [0, a, a+b, a+b+c, a+b+c+d],
+    /// that is, the output array is one element larger than the input.
+    ///
+    /// Thus, output[i] gives the offset for i, and output[i+1]-output[i] gives input[i].
+    ///
+    /// \note Supports in-place operation, i.e. output_d == input_d.
+    /// 
+    /// \param output_d Device memory pointer to where the result of (N+1) elements is stored.
+    /// \param scratch_d Device memory pointer to scratch area, size given by \ref scratchByteSize.
+    /// \param input_d Device memory pointer to the N input elements.
+    /// \param N The number of input elements.
+    /// \param stream The CUDA stream to use.
+    void calcOffsets(uint32_t* output_d,
+                     uint32_t* scratch_d,
+                     const uint32_t* input_d,
+                     uint32_t N,
+                     cudaStream_t stream = 0);
+
+    /// Calculate an offset-table (exclusive prefix-sum with total concatenated on end), and write total sum.
+    ///
+    /// If input is
+    ///   [a, b, c, d],
+    /// then the result is
+    ///   [0, a, a+b, a+b+c, a+b+c+d],
+    /// that is, the output array is one element larger than the input.
+    ///
+    /// Thus, output[i] gives the offset for i, and output[i+1]-output[i] gives input[i].
+    ///
+    /// In addition, the total (i.e. last element of output) is also written to given device pointer. A use
+    /// for this is when a subsequent grid depends on the total sum, and this total sum is zero-copied to
+    /// host memory and is available as soon as the kernel is finished. See test application for an example.
+    ///
+    /// \note Supports in-place operation, i.e. output_d == input_d.
+    /// 
+    /// \param output_d Device memory pointer to where the result of (N+1) elements is stored.
+    /// \param sum_d Device memory pointer to where the total sum.
+    /// \param scratch_d Device memory pointer to scratch area, size given by \ref scratchByteSize.
+    /// \param input_d Device memory pointer to the N input elements.
+    /// \param N The number of input elements.
+    /// \param stream The CUDA stream to use.
     void calcOffsets(uint32_t* output_d,
                      uint32_t* sum_d,
                      uint32_t* scratch_d,
@@ -33,11 +106,6 @@ namespace ComputeStuff {
                      uint32_t N,
                      cudaStream_t stream = 0);
 
-    void calcOffsets(uint32_t* output_d,
-                     uint32_t* scratch_d,
-                     const uint32_t* input_d,
-                     uint32_t N,
-                     cudaStream_t stream = 0);
 
   }
 }

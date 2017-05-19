@@ -17,11 +17,11 @@
 namespace {
 
   bool test = true;
-  bool perf = false;
+  bool perf = true;
 
   bool inclusiveScan = true;
   bool exclusiveScan = true;
-  bool offsetTable = false;
+  bool offsetTable = true;
 
 
   void logFailure(cudaError_t error, const char *file, int line)
@@ -270,16 +270,23 @@ int main(int argc, char** argv)
 
   assertSuccess(cudaSetDevice(0));
 
+  cudaDeviceProp props;
+  assertSuccess(cudaGetDeviceProperties(&props, 0));
+  if (props.major < 3) {
+    std::cerr << "Compute capability 3.0 is minimum." << std::endl;
+    return -1;
+  }
+
+
   if (test) {
-    for (uint64_t N = 1; N < (uint64_t)(1 << 31 - 1); N = (N == 0 ? 1 : 7 * N + N / 3))
+    for (uint64_t N = 1; N < (uint64_t)(props.totalGlobalMem / 10); N = (N == 0 ? 1 : 7 * N + N / 3))
     {
       runTest(static_cast<uint32_t>(N));
     }
-    //runSize(1 << 31 - 1);
   }
 
   if (perf) {
-    for (uint64_t N = 1; N < (uint64_t)(1 << 29 - 1); N = 3 * N + N / 3) {
+    for (uint64_t N = 1; N < (uint64_t)(props.totalGlobalMem / 10); N = 3 * N + N / 3) {
       runPerf(static_cast<uint32_t>(N));
     }
   }
