@@ -20,7 +20,7 @@ namespace {
   bool perf = false;
 
   bool inclusiveScan = true;
-  bool exclusiveScan = false;
+  bool exclusiveScan = true;
   bool offsetTable = false;
 
 
@@ -178,13 +178,13 @@ void runPerf(uint32_t N)
   for (size_t i = 0; i < N; i++) {
     in_h[i] = in_s[i] = i % 3;
   }
-  uint32_t* offsets_d;
+  uint32_t* output_d;
   uint32_t* scratch_d;
-  uint32_t* counts_d;
-  assertSuccess(cudaMalloc(&offsets_d, sizeof(uint32_t)*(N + 1)));
+  uint32_t* input_d;
+  assertSuccess(cudaMalloc(&output_d, sizeof(uint32_t)*(N + 1)));
   assertSuccess(cudaMalloc(&scratch_d, ComputeStuff::Scan::scratchByteSize(N)));
-  assertSuccess(cudaMalloc(&counts_d, sizeof(uint32_t)*N));
-  assertSuccess(cudaMemcpy(counts_d, in_s.data(), sizeof(uint32_t)*N, cudaMemcpyHostToDevice));
+  assertSuccess(cudaMalloc(&input_d, sizeof(uint32_t)*N));
+  assertSuccess(cudaMemcpy(input_d, in_s.data(), sizeof(uint32_t)*N, cudaMemcpyHostToDevice));
 
   thrust::device_vector<uint32_t> in_d = in_h;
   thrust::device_vector<uint32_t> out_d(N);
@@ -201,11 +201,11 @@ void runPerf(uint32_t N)
 
   // Run ComputeStuff scan
   for (uint32_t i = 0; i < 10; i++) {  // warm-up
-    ComputeStuff::Scan::calcOffsets(offsets_d, scratch_d, counts_d, N);
+    ComputeStuff::Scan::exclusiveScan(output_d, scratch_d, input_d, N);
   }
   cudaEventRecord(startB, stream);
   for (uint32_t i = 0; i < 50; i++) {  // perf-run
-    ComputeStuff::Scan::calcOffsets(offsets_d, scratch_d, counts_d, N);
+    ComputeStuff::Scan::exclusiveScan(output_d, scratch_d, input_d, N);
   }
   cudaEventRecord(stopB, stream);
 
@@ -217,9 +217,9 @@ void runPerf(uint32_t N)
   std::cerr << "N=" << N << ",\tthrust=" << (elapsedA / 50.0) << "ms,\tComputeStuff=" << (elapsedB / 50.0) << "ms,\tratio CS/thrust=" << (elapsedB/elapsedA) << std::endl;
  
 
-  assertSuccess(cudaFree(counts_d));
+  assertSuccess(cudaFree(input_d));
   assertSuccess(cudaFree(scratch_d));
-  assertSuccess(cudaFree(offsets_d));
+  assertSuccess(cudaFree(output_d));
 
 
 

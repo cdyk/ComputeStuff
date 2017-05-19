@@ -56,7 +56,7 @@ namespace ComputeStuff {
         if (threadIdx.x == 0) {
           auto a = warpSum[0];
 
-#pragma unroll
+          #pragma unroll
           for (uint32_t i = 1; i < SCAN_WARPS; i++) {
             a += warpSum[i];
           }
@@ -123,27 +123,34 @@ namespace ComputeStuff {
           if (writeSum1) *sum1 = s;
         }
 
-        if (inclusive == false) {
-          s -= q; // exclusive scan
-        }
+        s -= q;
 
         if (readOffset) {
           s += offset[blockIdx.x];
         }
 
         // Store
+        uint4 r;
+        if (inclusive) {
+          r = make_uint4(s + a.x,
+                         s + a.x + a.y,
+                         s + a.x + a.y + a.z,
+                         s + a.x + a.y + a.z + a.w);
+        }
+        else {
+          r = make_uint4(s,
+                         s + a.x,
+                         s + a.x + a.y,
+                         s + a.x + a.y + a.z);
+        }
+
         if (threadOffset + 3 < N) {
-          *reinterpret_cast<uint4*>(output + threadOffset) = make_uint4(s,
-                                                                        s + a.x,
-                                                                        s + a.x + a.y,
-                                                                        s + a.x + a.y + a.z);
+          *reinterpret_cast<uint4*>(output + threadOffset) = r;
         }
         else if (threadOffset < N) {
-          output[threadOffset + 0] = s;
-          s += a.x;
-          if (threadOffset + 1 < N) output[threadOffset + 1] = s;
-          s += a.y;
-          if (threadOffset + 2 < N) output[threadOffset + 2] = s;
+          output[threadOffset + 0] = r.x;
+          if (threadOffset + 1 < N) output[threadOffset + 1] = r.y;
+          if (threadOffset + 2 < N) output[threadOffset + 2] = r.z;
         }
 
       }
