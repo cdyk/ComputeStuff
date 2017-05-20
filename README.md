@@ -2,20 +2,94 @@
 
 MIT-licensed stand-alone CUDA utility functions.
 
-The plan is to make various useful functions of mine available for the public under a liberal license. The functions are designed to have a minimum of dependencies, so integration is mostly just importing the relevant files into your project.
+The intent is to make various useful functions of mine available for the public under a liberal license --- so that anyone can freely use the code without any license issues.
+
+The functions are designed to have a minimum of dependencies, so integration is mostly just adding the relevant files into your project.
 
 I've started with variants of scan, and the plan is to continue with HistoPyramid algorithms and Marching Cubes.
 
 ## Prefix sum / Scan
 
 Implementation of
+
 * exclusive scan,
 * inclusive scan, and
 * offset-table.
 
 The offset-table  is an exclusive scan with the total sum appended to the output. In addition, the total sum can be outputed to a device pointer, which allows zero-copy of the total sum back to host memory.
 
-The implementation has decent performance, the numbers below is a comparison with thrust's exclusive scan on an GTX 980 Ti. See code for details on the benchmark.
+Please consult [Scan/Scan.h](Scan/Scan.h) for exact API entry points.
+
+### How to use
+
+Either link against the static library built by the [Scan project](Scan/Scan.vcxproj) in the solution, or just add the files [Scan/Scan.h](Scan/Scan.h) and [Scan/Scan.cu](Scan/Scan.cu) to your project.
+
+The file [Scan/Scan.h](Scan/Scan.h) contains the public API, and [Scan/Scan.cu](Scan/Scan.cu) contains the implementation.
+
+#### Scratch buffer
+
+All the scan functions need a scratch buffer of device memory to store some intermediate data. The size of this buffer is given by `ComputeStuff::Scan::scratchByteSize(N)`. It is the application developer's responsibility to create this buffer, e.g.,
+
+````c++
+uint32_t*scratch_d;
+cudaMalloc(&scratch_d, ComputeStuff::Scan::scratchByteSize(N));
+````
+
+This let you have total control of memory management, so no strange malloc's or copy's is injected behind the scenes.
+
+This buffer can be recycled between invocations that don't overlap, that is, they don't run at the same time on different streams --- in that case you need multiple scratch buffers.
+
+Also, the size of this buffer grows monotonically with N, so if you are going to run several scans for different Ns, just use the largest N to determine the scratch buffer size, and you should be good.
+
+#### In-place operation
+
+All scan functions supports (without any penalty) in-place operation, that is using the same buffer for input and output.
+````c++
+// inout_d contains the input of N elements
+ComputeStuff::Scan::exclusiveScan(inout_d, scratch_d, inout_d, N);
+// inout_d contains the output of N elements
+````
+
+Note that for the offsetTable-functions, the output is of size N+1, while the input is of size N, so the buffer must be large enough.
+
+
+#### Write sum
+
+The offsetTable-function can optionally write the total sum of the input to anywhere in device memory. This is useful for zero-copying the result back to the CPU, if some subseqent code (like a grid size) is dependent on this number. An example:
+
+````c++
+// In setup:
+// Alloc host-mem that can be mapped in the GPU
+uint32_t* sum_h;
+cudaHostAlloc(&sum_h, sizeof(uint32_t), cudaHostAllocMapped);
+
+// Get device pointer of sum_h mapped to GPU memory space.
+uint32_t *sum_d;
+cudaHostGetDevicePointer(&sum_d, sum_h, 0);
+
+// During run:
+// Now, input_d is populated with input, build offset table_
+ComputeStuff::Scan::calcOffsets(output_d, sum_d, scratch_d, input_d, N, stream);
+cudaEventRecord(calcOffsetsDone, stream);
+
+// ... Optionally do something else ...
+
+// Wait for kernel has finished running.
+cudaEventSynchronize(calcOffsetsDone);
+
+// Now, the sum is available, e.g. use it to determine a grid size.
+someKernel<<<(sum_h+1023)/1024, 1024, 0, stream>>>(foo, bar, ...);
+````
+
+
+#### Concurrent invocations
+
+All API functions have an optional stream argument, which, not surprisingly, will insert the GPU operations on that given stream. Also, since no global state is used inside the function, it should be safe to run several scans simultaneously on different streams --- as long as they have separate scratch buffers.
+
+
+### Performance
+
+The implementation has decent performance, the numbers below is a comparison with thrust's exclusive scan on an GTX 980 Ti. See [ScanTest/main.cu](ScanTest/main.cu) for details.
 
 | N | thrust | ComputeStuff | ratio |
 |---|--------|--------------|-------|
