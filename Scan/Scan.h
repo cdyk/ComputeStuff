@@ -106,6 +106,13 @@ namespace ComputeStuff {
                      uint32_t N,
                      cudaStream_t stream = 0);
 
+    void compact(uint32_t* out_d,
+                 uint32_t* sum_d,
+                 uint32_t* scratch_d,
+                 const uint32_t* in_d,
+                 uint32_t N,
+                 cudaStream_t stream = (cudaStream_t)0);
+
 
   }
 }

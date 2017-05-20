@@ -67,7 +67,7 @@ namespace {
     }
   }
 
-  template<bool inclusive, bool writeSum0, bool writeSum1, bool readOffset>
+  template<bool subset, bool inclusive, bool writeSum0, bool writeSum1, bool readOffset>
   __global__
   __launch_bounds__(SCAN_WARPS * WARPSIZE)
   void
@@ -173,7 +173,7 @@ namespace {
 
 
   // Helper func to run all scan variants.
-  template<bool inclusive, bool extraElement, bool writeSum>
+  template<bool subset, bool inclusive, bool extraElement, bool writeSum>
   void runKernels(uint32_t* output_d,
                   uint32_t* sum_d,
                   uint32_t* scratch_d,
@@ -198,12 +198,12 @@ namespace {
 
     if (levels.empty()) {
 
-      ::scan<inclusive, extraElement, writeSum, false><<<1, blockSize, 0, stream >>>(output_d,
-                                                                                     output_d + N,
-                                                                                     sum_d,
-                                                                                     input_d,
-                                                                                     nullptr,
-                                                                                     N);
+      ::scan<subset, inclusive, extraElement, writeSum, false><<<1, blockSize, 0, stream >>>(output_d,
+                                                                                             output_d + N,
+                                                                                             sum_d,
+                                                                                             input_d,
+                                                                                             nullptr,
+                                                                                             N);
 
     }
     else {
@@ -223,30 +223,30 @@ namespace {
       }
 
       // Run scan on last level L-1, and write off total sum to last element of output (offsets_d+N).
-      ::scan<false, extraElement, writeSum, false><<<1, blockSize, 0, stream >>>(scratch_d + offsets[L - 1],
-                                                                                 output_d + N,
-                                                                                 sum_d,
-                                                                                 scratch_d + offsets[L - 1],
-                                                                                 nullptr,
-                                                                                 levels[L - 1]);
+      ::scan<false, false, extraElement, writeSum, false><<<1, blockSize, 0, stream >>>(scratch_d + offsets[L - 1],
+                                                                                        output_d + N,
+                                                                                        sum_d,
+                                                                                        scratch_d + offsets[L - 1],
+                                                                                        nullptr,
+                                                                                        levels[L - 1]);
 
       // Now, level L-1 is processed, scan levels L-2...0 pulling start offsets from the level above.
       for (uint32_t i = L - 1u; 0 < i; i--) {
-        ::scan<false, false, false, true><<<levels[i], blockSize, 0, stream >>>(scratch_d + offsets[i - 1],
-                                                                                nullptr,
-                                                                                nullptr,
-                                                                                scratch_d + offsets[i - 1],
-                                                                                scratch_d + offsets[i],
-                                                                                levels[i - 1]);
+        ::scan<false, false, false, false, true><<<levels[i], blockSize, 0, stream >>>(scratch_d + offsets[i - 1],
+                                                                                       nullptr,
+                                                                                       nullptr,
+                                                                                       scratch_d + offsets[i - 1],
+                                                                                       scratch_d + offsets[i],
+                                                                                       levels[i - 1]);
       }
 
       // Now, level 0 is processed, scan input writing to output, pulling offsets from level 0.
-      ::scan<inclusive, false, false, true><<<levels[0], blockSize, 0, stream >>>(output_d,
-                                                                                  nullptr,
-                                                                                  nullptr,
-                                                                                  input_d,
-                                                                                  scratch_d + offsets[0],
-                                                                                  N);
+      ::scan<subset, inclusive, false, false, true><<<levels[0], blockSize, 0, stream >>>(output_d,
+                                                                                          nullptr,
+                                                                                          nullptr,
+                                                                                          input_d,
+                                                                                          scratch_d + offsets[0],
+                                                                                          N);
     }
   }
 
@@ -273,7 +273,7 @@ void ComputeStuff::Scan::exclusiveScan(uint32_t* output_d,
                                        uint32_t N,
                                        cudaStream_t stream)
 {
-  runKernels<false, false, false>(output_d, nullptr, scratch_d, input_d, N, stream);
+  runKernels<false, false, false, false>(output_d, nullptr, scratch_d, input_d, N, stream);
 }
 
 void ComputeStuff::Scan::inclusiveScan(uint32_t* output_d,
@@ -282,7 +282,7 @@ void ComputeStuff::Scan::inclusiveScan(uint32_t* output_d,
                                        uint32_t N,
                                        cudaStream_t stream)
 {
-  runKernels<true, false, false>(output_d, nullptr, scratch_d, input_d, N, stream);
+  runKernels<false, true, false, false>(output_d, nullptr, scratch_d, input_d, N, stream);
 }
 
 void ComputeStuff::Scan::calcOffsets(uint32_t* offsets_d,
@@ -292,7 +292,7 @@ void ComputeStuff::Scan::calcOffsets(uint32_t* offsets_d,
                                      uint32_t N,
                                      cudaStream_t stream)
 {
-  runKernels<false, true, true>(offsets_d, sum_d, scratch_d, counts_d, N, stream);
+  runKernels<false, false, true, true>(offsets_d, sum_d, scratch_d, counts_d, N, stream);
 }
 
 void ComputeStuff::Scan::calcOffsets(uint32_t* offsets_d,
@@ -301,5 +301,15 @@ void ComputeStuff::Scan::calcOffsets(uint32_t* offsets_d,
                                      uint32_t N,
                                      cudaStream_t stream)
 {
-  runKernels<false, true, false>(offsets_d, nullptr, scratch_d, counts_d, N, stream);
+  runKernels<false, false, true, false>(offsets_d, nullptr, scratch_d, counts_d, N, stream);
+}
+
+void ComputeStuff::Scan::compact(uint32_t* out_d,
+                                 uint32_t* sum_d,
+                                 uint32_t* scratch_d,
+                                 const uint32_t* in_d,
+                                 uint32_t N,
+                                 cudaStream_t stream)
+{
+  runKernels<true, false, false, true>(out_d, sum_d, scratch_d, in_d, N, stream);
 }

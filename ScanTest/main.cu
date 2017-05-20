@@ -10,7 +10,6 @@
 #include <thrust/execution_policy.h>
 #include <iostream>
 #include <vector>
-#include <cassert>
 
 #include <Scan.h>
 
@@ -22,6 +21,7 @@ namespace {
   bool inclusiveScan = true;
   bool exclusiveScan = true;
   bool offsetTable = true;
+  bool doCompact = true;
 
 
   void logFailure(cudaError_t error, const char *file, int line)
@@ -50,6 +50,9 @@ void runTest(uint32_t N)
   std::vector<uint32_t> counts(N);
   std::vector<uint32_t> offsetsGold(N + 1);
 
+  std::vector<uint32_t> compact(N);
+  std::vector<uint32_t> compactGold(N + 1);
+
   uint32_t* sum_h, *sum_d;
   assertSuccess(cudaHostAlloc(&sum_h, sizeof(uint32_t), cudaHostAllocMapped));
   assertSuccess(cudaHostGetDevicePointer(&sum_d, sum_h, 0));
@@ -67,9 +70,15 @@ void runTest(uint32_t N)
 
     // Set up problem
     offsetsGold[0] = 0;
+    uint32_t compactGold_sum = 0;
     for (size_t i = 0; i < N; i++) {
       counts[i] = modulo == 1 ? 1 : (i % modulo);
       offsetsGold[i + 1] = offsetsGold[i] + counts[i];
+
+      compact[i] = modulo == 1 ? 1 : (i % modulo == 0 ? i + 1 : 0); // Any nonzero number flags surviving element.
+      if (compact[i] != 0) {
+        compactGold[compactGold_sum++] = i;
+      }
     }
     assertSuccess(cudaMemcpy(input_d, counts.data(), sizeof(uint32_t)*N, cudaMemcpyHostToDevice));
 
@@ -122,14 +131,14 @@ void runTest(uint32_t N)
 
       // Offset without sum, in-place
       assertSuccess(cudaMemcpy(output_d, input_d, sizeof(uint32_t)*N, cudaMemcpyDeviceToDevice));
-      assert(cudaMemset(output_d + N, ~0, sizeof(uint32_t)));
+      assertSuccess(cudaMemset(output_d + N, ~0, sizeof(uint32_t)));
       ComputeStuff::Scan::calcOffsets(output_d, scratch_d, output_d, N);
       assertSuccess(cudaStreamSynchronize(0));
       assertSuccess(cudaMemcpy(offsets.data(), output_d, sizeof(uint32_t)*(N + 1), cudaMemcpyDeviceToHost));
       assertMatching(offsets.data(), offsetsGold.data(), N + 1);
 
       // Offset with sum, disjoint input and output
-      assert(cudaMemset(output_d, ~0, (N + 1) * sizeof(uint32_t)));
+      assertSuccess(cudaMemset(output_d, ~0, (N + 1) * sizeof(uint32_t)));
       *sum_h = ~0;
       ComputeStuff::Scan::calcOffsets(output_d, sum_d, scratch_d, input_d, N);
       assertSuccess(cudaStreamSynchronize(0));
@@ -152,6 +161,21 @@ void runTest(uint32_t N)
         std::cerr << "Wrong sum." << std::endl;
         abort();
       }
+    }
+
+    if (doCompact) {
+      *sum_h = 0;
+      assertSuccess(cudaMemcpy(input_d, compact.data(), sizeof(uint32_t)*N, cudaMemcpyHostToDevice));
+      ComputeStuff::Scan::compact(output_d, sum_d, scratch_d, input_d, N);
+      assertSuccess(cudaStreamSynchronize(0));
+      assertSuccess(cudaMemcpy(offsets.data(), output_d, sizeof(uint32_t)*N, cudaMemcpyDeviceToHost));
+#if 0
+      assertMatching(offsets.data(), compactGold.data(), compactGold_sum);
+      if (*((volatile uint32_t*)sum_h) != compactGold_sum) {
+        std::cerr << "Wrong sum." << std::endl;
+        abort();
+      }
+#endif
     }
 
   }
