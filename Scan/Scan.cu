@@ -144,28 +144,40 @@ namespace {
       s += offset[blockIdx.x];
     }
 
-    // Store
-    uint4 r;
-    if (inclusive) {
-      r = make_uint4(s + a.x,
-                     s + a.x + a.y,
-                     s + a.x + a.y + a.z,
-                     s + a.x + a.y + a.z + a.w);
+    if (subset) {
+      uint4 r = make_uint4(s,
+                           s + a.x,
+                           s + a.x + a.y,
+                           s + a.x + a.y + a.z);
+      if (a.x) output[r.x] = threadOffset + 0;
+      if (a.y) output[r.y] = threadOffset + 1;
+      if (a.z) output[r.z] = threadOffset + 2;
+      if (a.w) output[r.w] = threadOffset + 3;
     }
     else {
-      r = make_uint4(s,
-                     s + a.x,
-                     s + a.x + a.y,
-                     s + a.x + a.y + a.z);
-    }
+      // Store
+      uint4 r;
+      if (inclusive) {
+        r = make_uint4(s + a.x,
+                       s + a.x + a.y,
+                       s + a.x + a.y + a.z,
+                       s + a.x + a.y + a.z + a.w);
+      }
+      else {
+        r = make_uint4(s,
+                       s + a.x,
+                       s + a.x + a.y,
+                       s + a.x + a.y + a.z);
+      }
 
-    if (threadOffset + 3 < N) {
-      *reinterpret_cast<uint4*>(output + threadOffset) = r;
-    }
-    else if (threadOffset < N) {
-      output[threadOffset + 0] = r.x;
-      if (threadOffset + 1 < N) output[threadOffset + 1] = r.y;
-      if (threadOffset + 2 < N) output[threadOffset + 2] = r.z;
+      if (threadOffset + 3 < N) {
+        *reinterpret_cast<uint4*>(output + threadOffset) = r;
+      }
+      else if (threadOffset < N) {
+        output[threadOffset + 0] = r.x;
+        if (threadOffset + 1 < N) output[threadOffset + 1] = r.y;
+        if (threadOffset + 2 < N) output[threadOffset + 2] = r.z;
+      }
     }
   }
 
