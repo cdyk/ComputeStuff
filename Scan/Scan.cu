@@ -11,6 +11,7 @@
 
 namespace {
 
+  template<bool subset>
   __global__
   __launch_bounds__(SCAN_WARPS * WARPSIZE)
   void
@@ -35,6 +36,12 @@ namespace {
       a.y = threadOffset + 1 < N ? input[threadOffset + 1] : 0;
       a.z = threadOffset + 2 < N ? input[threadOffset + 2] : 0;
       a.w = 0;
+    }
+    if (subset) {
+      a.x = a.x != 0 ? 1 : 0;
+      a.y = a.y != 0 ? 1 : 0;
+      a.z = a.z != 0 ? 1 : 0;
+      a.w = a.w != 0 ? 1 : 0;
     }
     uint32_t s = a.x + a.y + a.z + a.w;
 
@@ -95,6 +102,12 @@ namespace {
       a.y = threadOffset + 1 < N ? input[threadOffset + 1] : 0;
       a.z = threadOffset + 2 < N ? input[threadOffset + 2] : 0;
       a.w = 0;
+    }
+    if (subset) {
+      a.x = a.x != 0 ? 1 : 0;
+      a.y = a.y != 0 ? 1 : 0;
+      a.z = a.z != 0 ? 1 : 0;
+      a.w = a.w != 0 ? 1 : 0;
     }
     uint32_t s = a.x + a.y + a.z + a.w;
     uint32_t q = s;
@@ -211,13 +224,13 @@ namespace {
       uint32_t L = static_cast<uint32_t>(levels.size());
 
       // From input, populate level 0
-      ::reduce<<<levels[0], blockSize, 0, stream >>>(scratch_d + offsets[0],
+      ::reduce<subset><<<levels[0], blockSize, 0, stream >>>(scratch_d + offsets[0],
                                                      input_d,
                                                      N);
 
       // From level i-1, populate level i, up to including L-1.
       for (uint32_t i = 1; i < L; i++) {
-        ::reduce<<<levels[i], blockSize, 0, stream >>>(scratch_d + offsets[i],
+        ::reduce<false><<<levels[i], blockSize, 0, stream >>>(scratch_d + offsets[i],
                                                        scratch_d + offsets[i - 1],
                                                        levels[i - 1]);
       }

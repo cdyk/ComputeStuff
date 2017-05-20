@@ -171,11 +171,11 @@ void runTest(uint32_t N)
       assertSuccess(cudaMemcpy(offsets.data(), output_d, sizeof(uint32_t)*N, cudaMemcpyDeviceToHost));
 #if 0
       assertMatching(offsets.data(), compactGold.data(), compactGold_sum);
+#endif
       if (*((volatile uint32_t*)sum_h) != compactGold_sum) {
         std::cerr << "Wrong sum." << std::endl;
         abort();
       }
-#endif
     }
 
   }
