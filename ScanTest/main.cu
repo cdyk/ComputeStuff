@@ -177,6 +177,19 @@ void runTest(uint32_t N)
         std::cerr << "Wrong sum." << std::endl;
         abort();
       }
+
+      // In-place
+      *sum_h = 0;
+      assertSuccess(cudaMemcpy(output_d, input_d, sizeof(uint32_t)*N, cudaMemcpyDeviceToDevice));
+      ComputeStuff::Scan::compact(output_d, sum_d, scratch_d, output_d, N);
+      assertSuccess(cudaStreamSynchronize(0));
+      assertSuccess(cudaMemcpy(offsets.data(), output_d, sizeof(uint32_t)*N, cudaMemcpyDeviceToHost));
+      assertMatching(offsets.data(), compactGold.data(), compactGold_sum);
+      if (*((volatile uint32_t*)sum_h) != compactGold_sum) {
+        std::cerr << "Wrong sum." << std::endl;
+        abort();
+      }
+
     }
 
   }
