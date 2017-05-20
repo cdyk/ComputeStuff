@@ -12,13 +12,12 @@ I've started with variants of scan, and the plan is to continue with HistoPyrami
 
 Implementation of
 
-* exclusive scan,
-* inclusive scan, and
-* offset-table.
+* **exclusive scan:** From [a,b,c,d] calculate [0, a, a+b, a+b+c] (a.k.a exclusive prefix-sum).
+* **inclusive scan:** From [a,b,c,d] calculate [a, a+b, a+b+c, a+b+c+d] (a.k.a inclusive prefix-sum).
+* **offset-table:** Calculate an offset-table (exclusive prefix-sum with total concatenated on end), and optionally write the total sum somewhere in device memory. From [a,b,c,d] calculate [0, a, a+b, a+b+c, a+b+c+d], so that element _i_ contains the offset _i_ and the difference betweem elements _i_ and _i+1_ is the corresponding value that was in the input array. 
+* **compact:** Extract indices where the corresponding input has a non-zero value (a.k.a. subset, stream-compact and copy-if), and write the number of entries in the output somewhere in device memory.
 
-The offset-table  is an exclusive scan with the total sum appended to the output. In addition, the total sum can be outputed to a device pointer, which allows zero-copy of the total sum back to host memory.
-
-Please consult [Scan/Scan.h](Scan/Scan.h) for exact API entry points.
+Please consult [Scan/Scan.h](Scan/Scan.h) for details on the API entry points.
 
 ### How to use
 
