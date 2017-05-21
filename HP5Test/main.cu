@@ -1,3 +1,6 @@
+// This file is part of ComputeStuff copyright (C) 2017 Christopher Dyken.
+// Released under the MIT license, please see LICENSE file for details.
+
 #include <vector>
 #include <iomanip>
 #include <iostream>
@@ -88,6 +91,7 @@ void runCompactTest(uint32_t N, uint32_t m)
   uint32_t *out_d, *in_d, *hp5_scratch_d, *scan_scratch_d;
   assertSuccess(cudaMalloc(&out_d, sizeof(uint32_t)*N));
   assertSuccess(cudaMalloc(&in_d, sizeof(uint32_t)*N));
+  assertSuccess(cudaMalloc(&hp5_scratch_d, ComputeStuff::HP5::scratchByteSize(N)));
   assertSuccess(cudaMalloc(&scan_scratch_d, ComputeStuff::Scan::scratchByteSize(N)));
 
   std::vector<uint32_t> out_h(N);
@@ -113,20 +117,28 @@ void runCompactTest(uint32_t N, uint32_t m)
   assertMatching(sum_h, sum);
   assertMatching(out_h.data(), out.data(), sum);
 
+  for (uint32_t i = 0; i < 10; i++) {
+    ComputeStuff::HP5::compact(out_d, sum_d, hp5_scratch_d, in_d, N, stream);
+  }
   cudaEventRecord(startB, stream);
-  //...
+  for (uint32_t i = 0; i < 50; i++) {
+    ComputeStuff::HP5::compact(out_d, sum_d, hp5_scratch_d, in_d, N, stream);
+  }
   cudaEventRecord(stopB, stream);
   cudaEventSynchronize(stopB);
+
+  //assertMatching(sum_h, sum);
+  //assertMatching(out_h.data(), out.data(), sum);
 
   // Worst case
   buildCompactProblemWorstCase(out, sum, in, N, m);
   assertSuccess(cudaMemcpy(in_d, in.data(), sizeof(uint32_t)*N, cudaMemcpyHostToDevice));
   *sum_h = ~0u;
-  for (uint32_t i = 0; i < 10; i++) {
+  for (uint32_t i = 0; i < 10; i++) { // Warm-up
     ComputeStuff::Scan::compact(out_d, sum_d, scan_scratch_d, in_d, N, stream);
   }
   cudaEventRecord(startC, stream);
-  for (uint32_t i = 0; i < 50; i++) {
+  for (uint32_t i = 0; i < 50; i++) { // Perf run
     ComputeStuff::Scan::compact(out_d, sum_d, scan_scratch_d, in_d, N, stream);
   }
   cudaEventRecord(stopC, stream);
@@ -136,10 +148,19 @@ void runCompactTest(uint32_t N, uint32_t m)
   assertMatching(sum_h, sum);
   assertMatching(out_h.data(), out.data(), sum);
 
+  *sum_h = ~0u;
+  for (uint32_t i = 0; i < 10; i++) { // Warm-up
+    ComputeStuff::HP5::compact(out_d, sum_d, hp5_scratch_d, in_d, N, stream);
+  }
   cudaEventRecord(startD, stream);
-  //...
+  for (uint32_t i = 0; i < 50; i++) { // Perf run
+    ComputeStuff::HP5::compact(out_d, sum_d, hp5_scratch_d, in_d, N, stream);
+  }
   cudaEventRecord(stopD, stream);
   cudaEventSynchronize(stopD);
+
+  //assertMatching(sum_h, sum);
+  //assertMatching(out_h.data(), out.data(), sum);
 
 
   float elapsedA, elapsedB, elapsedC, elapsedD;
