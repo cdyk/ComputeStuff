@@ -117,6 +117,7 @@ void runCompactTest(uint32_t N, uint32_t m)
   assertMatching(sum_h, sum);
   assertMatching(out_h.data(), out.data(), sum);
 
+  *sum_h = ~0u;
   for (uint32_t i = 0; i < 10; i++) {
     ComputeStuff::HP5::compact(out_d, sum_d, hp5_scratch_d, in_d, N, stream);
   }
@@ -127,7 +128,7 @@ void runCompactTest(uint32_t N, uint32_t m)
   cudaEventRecord(stopB, stream);
   cudaEventSynchronize(stopB);
 
-  //assertMatching(sum_h, sum);
+  assertMatching(sum_h, sum);
   //assertMatching(out_h.data(), out.data(), sum);
 
   // Worst case
@@ -159,7 +160,7 @@ void runCompactTest(uint32_t N, uint32_t m)
   cudaEventRecord(stopD, stream);
   cudaEventSynchronize(stopD);
 
-  //assertMatching(sum_h, sum);
+  assertMatching(sum_h, sum);
   //assertMatching(out_h.data(), out.data(), sum);
 
 
