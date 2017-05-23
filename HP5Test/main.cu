@@ -129,7 +129,7 @@ void runCompactTest(uint32_t N, uint32_t m)
   cudaEventSynchronize(stopB);
 
   assertMatching(sum_h, sum);
-  //assertMatching(out_h.data(), out.data(), sum);
+  assertMatching(out_h.data(), out.data(), sum);
 
   // Worst case
   buildCompactProblemWorstCase(out, sum, in, N, m);
@@ -161,7 +161,7 @@ void runCompactTest(uint32_t N, uint32_t m)
   cudaEventSynchronize(stopD);
 
   assertMatching(sum_h, sum);
-  //assertMatching(out_h.data(), out.data(), sum);
+  assertMatching(out_h.data(), out.data(), sum);
 
 
   float elapsedA, elapsedB, elapsedC, elapsedD;

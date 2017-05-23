@@ -1,3 +1,5 @@
+#include <array>
+#include <cstdint>
 #include <vector>
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
@@ -119,6 +121,59 @@ namespace {
 
   }
 
+  /*template<uint32_t L>
+  struct LevelOffsets
+  {
+    __host__ LevelOffsets(const LevelOffsets&) = default;
+    __host__ LevelOffsets(uint32_t* v) { for (uint32_t i = 0; i < L; i++) value[i] = v[i]; }
+    uint32_t value[L];
+  };*/
+
+  __device__
+  inline uint32_t processHistoElement(uint32_t& offset, uint32_t key, const uint4 element)
+  {
+    if (key < element.x) {
+    }
+    else if (key < element.y) {
+      key -= element.x;
+      offset += 1;
+    }
+    else if (key < element.z) {
+      key -= element.y;
+      offset += 2;
+    }
+    else if (key < element.w) {
+      key -= element.z;
+      offset += 3;
+    }
+    else  {
+      key -= element.w;
+      offset += 4;
+    }
+    return key;
+  }
+
+
+  template<uint32_t L>
+  __global__
+  __launch_bounds__(128)
+  void extract(uint32_t* __restrict__ out_d,
+               const uint4* __restrict__ hp_d,
+               const std::array<uint32_t,L> offsets)
+  {
+    const uint32_t index = 128 * blockIdx.x + threadIdx.x;
+    if (hp_d[0].x <= index) return;
+
+    // Traverse apex.
+    uint32_t offset = 0;
+    uint32_t key = index;
+    key = processHistoElement(offset, key, hp_d[1]);
+    key = processHistoElement(offset, 5 * key, hp_d[2 + key]);
+    key = processHistoElement(offset, 5 * key, hp_d[7 + key]);
+
+    out_d[offset] = index;
+  }
+
   void scratchLayout(std::vector<uint32_t>& levels, std::vector<uint32_t>& offsets, uint32_t N)
   {
     if (N == 0) return;
@@ -150,6 +205,22 @@ namespace {
     offsets[levels.size() + 3] = o; // Final size
   }
 
+
+  template<uint32_t L>
+  std::array<uint32_t, L> arrayFromVector(const std::vector<uint32_t> src)
+  {
+    std::array<uint32_t, L> rv;
+    for (uint32_t i = 0; i < L; i++) rv[i] = src[i];
+    return rv;
+  }
+
+  template<>
+  std::array<uint32_t, 0> arrayFromVector<0>(const std::vector<uint32_t> src)
+  {
+    std::array<uint32_t, 0> rv = {};
+    return rv;
+  }
+
 }
 
 size_t ComputeStuff::HP5::scratchByteSize(uint32_t N)
@@ -173,35 +244,44 @@ void ComputeStuff::HP5::compact(uint32_t* out_d,
   std::vector<uint32_t> offsets;
   scratchLayout(levels, offsets, N);
 
-  if (levels.empty()) {
-    reduceApex<true, true> << <1, 128, 0, stream >> > (reinterpret_cast<uint4*>(scratch_d), sum_d, in_d, N);
+  auto L = levels.size();
+  if (L == 0) {
+    reduceApex<true, true><<<1, 128, 0, stream>>>(reinterpret_cast<uint4*>(scratch_d),
+                                                  sum_d,
+                                                  in_d,
+                                                  N);
   }
   else {
+    ::reduce1<true><<<levels[0], 160, 0, stream>>>(reinterpret_cast<uint4*>(scratch_d + offsets[0]),
+                                                   scratch_d + offsets[L + 1],
+                                                   in_d,
+                                                   N);
+    for (size_t i = 1; i < levels.size(); i++) {
+      ::reduce1<false><<<levels[i], 160, 0, stream>>>(reinterpret_cast<uint4*>(scratch_d + offsets[i]),
+                                                      scratch_d + offsets[L + 1 + ((i + 0) & 1)],
+                                                      scratch_d + offsets[L + 1 + ((i + 1) & 1)],
+                                                      32 * levels[i - 1]);
+
+    }
+    ::reduceApex<false, true><<<1, 128, 0, stream>>>(reinterpret_cast<uint4*>(scratch_d),
+                                                     sum_d,
+                                                     scratch_d + offsets[L + 1 + ((L + 1) & 1)],
+                                                     32 * levels[L - 1]);
+  }
+
+
+  switch (L)
+  {
+  case 0: ::extract<0><<<(N + 127) / 128, 127, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), arrayFromVector<0>(offsets)); break;
+  default:
     abort();
   }
+
+#if 1
   cudaStreamSynchronize(stream);
   auto error = cudaGetLastError();
   if (error != cudaSuccess) {
     abort();
   }
-
-
-/*
-
-  auto L = static_cast<uint32_t>(levels.size());
-
-
-
-  ::reduce1<true><<<(N+159)/160, 160, 0, stream>>>(reinterpret_cast<uint4*>(scratch_d + offsets[0]),
-                                                   scratch_d + offsets[L + 1],
-                                                   in_d,
-                                                   N);
-  for (uint32_t l = 1; l < L; l++) {
-    ::reduce1<false><<<(levels[l - 1] + 159) / 160, 160, 0, stream>>>(reinterpret_cast<uint4*>(scratch_d + offsets[L + 1 + ((l + 1) & 1)]),
-                                                                      scratch_d + offsets[L + 1 + (l & 1)],
-                                                                      in_d,
-                                                                      levels[l - 1]);
-  }
-
-  */
+#endif
 }
