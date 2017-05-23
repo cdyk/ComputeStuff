@@ -118,6 +118,7 @@ void runCompactTest(uint32_t N, uint32_t m)
   assertMatching(out_h.data(), out.data(), sum);
 
   *sum_h = ~0u;
+  cudaMemset(out_d, ~0, sizeof(uint32_t)*N);
   for (uint32_t i = 0; i < 10; i++) {
     ComputeStuff::HP5::compact(out_d, sum_d, hp5_scratch_d, in_d, N, stream);
   }
@@ -127,6 +128,7 @@ void runCompactTest(uint32_t N, uint32_t m)
   }
   cudaEventRecord(stopB, stream);
   cudaEventSynchronize(stopB);
+  cudaMemcpy(out_h.data(), out_d, sizeof(uint32_t)*N, cudaMemcpyDeviceToHost);
 
   assertMatching(sum_h, sum);
   assertMatching(out_h.data(), out.data(), sum);
@@ -159,6 +161,7 @@ void runCompactTest(uint32_t N, uint32_t m)
   }
   cudaEventRecord(stopD, stream);
   cudaEventSynchronize(stopD);
+  cudaMemcpy(out_h.data(), out_d, sizeof(uint32_t)*N, cudaMemcpyDeviceToHost);
 
   assertMatching(sum_h, sum);
   assertMatching(out_h.data(), out.data(), sum);
@@ -207,10 +210,10 @@ int main()
   }
 
 
-  for (uint64_t N = 1; N < (uint64_t)(props.totalGlobalMem / (sizeof(uint32_t) * 4)); N = 3 * N + N / 3) {
-    for (uint32_t m = 1; m < 10; m++) {
-      runCompactTest(static_cast<uint32_t>(N), m);
-    }
+  for (uint64_t N = 1220; N < (uint64_t)(props.totalGlobalMem / (sizeof(uint32_t) * 4)); N = 3 * N + N / 3) {
+    //for (uint32_t m = 1; m < 10; m++) {
+      runCompactTest(static_cast<uint32_t>(N), 17);
+    //}
   }
 
 }

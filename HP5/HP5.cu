@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <vector>
 #include <cuda_runtime.h>
+#include <cassert>
 #include <device_launch_parameters.h>
 
 #include "HP5.h"
@@ -130,8 +131,12 @@ namespace {
   };*/
 
   __device__
-  inline uint32_t processHistoElement(uint32_t& offset, uint32_t key, const uint4 element)
+  inline uint32_t processHistoElement(uint32_t& key, uint32_t offset, const uint4 element)
   {
+    assert(element.x <= element.y);
+    assert(element.y <= element.z);
+    assert(element.z <= element.w);
+
     if (key < element.x) {
     }
     else if (key < element.y) {
@@ -150,11 +155,11 @@ namespace {
       key -= element.w;
       offset += 4;
     }
-    return key;
+    return offset;
   }
 
   __device__
-  inline uint32_t processDataElement(uint32_t& offset, uint32_t key, const uint4 element)
+  inline uint32_t processDataElement(uint32_t& key, uint32_t offset, const uint4 element)
   {
     if (element.x <= key) {
       key -= element.x;
@@ -172,7 +177,7 @@ namespace {
         }
       }
     }
-    return key;
+    return offset;
   }
 
   template<uint32_t Q>
@@ -194,14 +199,12 @@ namespace {
     // Traverse apex.
     uint32_t offset = 0;
     uint32_t key = index;
-    key = processHistoElement(offset, key, hp_d[1]);
-    key = processHistoElement(offset, 5 * key, hp_d[2 + key]);
-    key = processHistoElement(offset, 5 * key, hp_d[7 + key]);
-
+    offset = processHistoElement(key, 5 * offset, hp_d[1]);
+    offset = processHistoElement(key, 5 * offset, hp_d[2 + offset]);
+    offset = processHistoElement(key, 5 * offset, hp_d[7 + offset]);
     for (uint32_t i = L; 0 < i; i--) {
-      key = processDataElement(offset, 5 * key, hp_d[offsets.data[i - 1] + key]);
+      offset = processDataElement(key, 5 * offset, hp_d[offsets.data[i - 1] + offset]);
     }
-
     out_d[offset] = index;
   }
 
@@ -251,7 +254,7 @@ size_t ComputeStuff::HP5::scratchByteSize(uint32_t N)
   std::vector<uint32_t> levels;
   std::vector<uint32_t> offsets;
   scratchLayout(levels, offsets, N);
-  return sizeof(uint32_t)*offsets.back();
+  return 4 * sizeof(uint32_t)*offsets.back();
 }
 
 void ComputeStuff::HP5::compact(uint32_t* out_d,
@@ -292,14 +295,23 @@ void ComputeStuff::HP5::compact(uint32_t* out_d,
                                                      32 * levels[L - 1]);
   }
 
-
   switch (L)
   {
-  case 0: ::extract<0,1><<<(N + 127) / 128, 127, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), arrayFromVector<1>(offsets)); break;
-  case 1: ::extract<1,1><<<(N + 127) / 128, 127, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), arrayFromVector<1>(offsets)); break;
-  case 2: ::extract<2,2><<<(N + 127) / 128, 127, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), arrayFromVector<2>(offsets)); break;
+  case 0: ::extract<0, 1><<<(N + 127) / 128, 127, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), arrayFromVector<1>(offsets)); break;
+  case 1: ::extract<1, 1><<<(N + 127) / 128, 127, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), arrayFromVector<1>(offsets)); break;
+  case 2: {
+    auto moo = arrayFromVector<2>(offsets);
+    ::extract<2, 2> << <(N + 127) / 128, 127, 0, stream >> > (out_d, reinterpret_cast<uint4*>(scratch_d), moo); break;
+
+  }
+  case 3: ::extract<3, 3><<<(N + 127) / 128, 127, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), arrayFromVector<3>(offsets)); break;
+  case 4: ::extract<4, 4><<<(N + 127) / 128, 127, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), arrayFromVector<4>(offsets)); break;
+  case 5: ::extract<5, 5><<<(N + 127) / 128, 127, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), arrayFromVector<5>(offsets)); break;
+  case 6: ::extract<6, 6><<<(N + 127) / 128, 127, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), arrayFromVector<6>(offsets)); break;
+  case 7: ::extract<7, 7><<<(N + 127) / 128, 127, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), arrayFromVector<7>(offsets)); break;
   default:
-    abort();
+    break;
+//    abort();
   }
 
 #if 1
