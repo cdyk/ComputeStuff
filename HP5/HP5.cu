@@ -153,13 +153,40 @@ namespace {
     return key;
   }
 
+  __device__
+  inline uint32_t processDataElement(uint32_t& offset, uint32_t key, const uint4 element)
+  {
+    if (element.x <= key) {
+      key -= element.x;
+      offset++;
+      if (element.y <= key) {
+        key -= element.y;
+        offset++;
+        if (element.z <= key) {
+          key -= element.z;
+          offset++;
+          if (element.w <= key) {
+            key -= element.w;
+            offset++;
+          }
+        }
+      }
+    }
+    return key;
+  }
 
-  template<uint32_t L>
+  template<uint32_t Q>
+  struct OffsetBlob
+  {
+    uint32_t data[Q];
+  };
+
+  template<uint32_t L, uint32_t Q>
   __global__
   __launch_bounds__(128)
   void extract(uint32_t* __restrict__ out_d,
                const uint4* __restrict__ hp_d,
-               const std::array<uint32_t,L> offsets)
+               const OffsetBlob<Q> offsets)
   {
     const uint32_t index = 128 * blockIdx.x + threadIdx.x;
     if (hp_d[0].x <= index) return;
@@ -170,6 +197,10 @@ namespace {
     key = processHistoElement(offset, key, hp_d[1]);
     key = processHistoElement(offset, 5 * key, hp_d[2 + key]);
     key = processHistoElement(offset, 5 * key, hp_d[7 + key]);
+
+    for (uint32_t i = L; 0 < i; i--) {
+      key = processDataElement(offset, 5 * key, hp_d[offsets.data[i - 1] + key]);
+    }
 
     out_d[offset] = index;
   }
@@ -205,19 +236,11 @@ namespace {
     offsets[levels.size() + 3] = o; // Final size
   }
 
-
   template<uint32_t L>
-  std::array<uint32_t, L> arrayFromVector(const std::vector<uint32_t> src)
+  OffsetBlob<L> arrayFromVector(const std::vector<uint32_t> src)
   {
-    std::array<uint32_t, L> rv;
-    for (uint32_t i = 0; i < L; i++) rv[i] = src[i];
-    return rv;
-  }
-
-  template<>
-  std::array<uint32_t, 0> arrayFromVector<0>(const std::vector<uint32_t> src)
-  {
-    std::array<uint32_t, 0> rv = {};
+    OffsetBlob<L> rv;
+    for (uint32_t i = 0; i < L; i++) rv.data[i] = src[i];
     return rv;
   }
 
@@ -272,7 +295,9 @@ void ComputeStuff::HP5::compact(uint32_t* out_d,
 
   switch (L)
   {
-  case 0: ::extract<0><<<(N + 127) / 128, 127, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), arrayFromVector<0>(offsets)); break;
+  case 0: ::extract<0,1><<<(N + 127) / 128, 127, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), arrayFromVector<1>(offsets)); break;
+  case 1: ::extract<1,1><<<(N + 127) / 128, 127, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), arrayFromVector<1>(offsets)); break;
+  case 2: ::extract<2,2><<<(N + 127) / 128, 127, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), arrayFromVector<2>(offsets)); break;
   default:
     abort();
   }
