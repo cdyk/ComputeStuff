@@ -180,21 +180,45 @@ namespace {
     return offset;
   }
 
-  template<uint32_t Q>
   struct OffsetBlob
   {
-    uint32_t data[Q];
+    uint32_t data0;
+    uint32_t data1;
+    uint32_t data2;
+    uint32_t data3;
+    uint32_t data4;
+    uint32_t data5;
+    uint32_t data6;
+    uint32_t data7;
+    uint32_t data8;
+    uint32_t data9;
+    uint32_t dataA;
+    uint32_t dataB;
   };
 
-  template<uint32_t L, uint32_t Q>
+  template<uint32_t L>
   __global__
   __launch_bounds__(128)
   void extract(uint32_t* __restrict__ out_d,
                const uint4* __restrict__ hp_d,
-               const OffsetBlob<Q> offsets)
+               OffsetBlob offsetBlob)
   {
     const uint32_t index = 128 * blockIdx.x + threadIdx.x;
     if (hp_d[0].x <= index) return;
+
+    __shared__ uint32_t offsets[12];
+    if (0 < L) offsets[0] = offsetBlob.data0;
+    if (1 < L) offsets[1] = offsetBlob.data1;
+    if (2 < L) offsets[2] = offsetBlob.data2;
+    if (3 < L) offsets[3] = offsetBlob.data3;
+    if (4 < L) offsets[4] = offsetBlob.data4;
+    if (5 < L) offsets[5] = offsetBlob.data5;
+    if (6 < L) offsets[6] = offsetBlob.data6;
+    if (7 < L) offsets[7] = offsetBlob.data7;
+    if (8 < L) offsets[8] = offsetBlob.data8;
+    if (9 < L) offsets[9] = offsetBlob.data9;
+    if (10 < L) offsets[10] = offsetBlob.dataA;
+    if (11 < L) offsets[11] = offsetBlob.dataB;
 
     // Traverse apex.
     uint32_t offset = 0;
@@ -203,9 +227,9 @@ namespace {
     offset = processHistoElement(key, 5 * offset, hp_d[2 + offset]);
     offset = processHistoElement(key, 5 * offset, hp_d[7 + offset]);
     for (uint32_t i = L; 0 < i; i--) {
-      offset = processDataElement(key, 5 * offset, hp_d[offsets.data[i - 1] + offset]);
+      offset = processDataElement(key, 5 * offset, hp_d[offsets[i - 1] + offset]);
     }
-    out_d[offset] = index;
+    out_d[index] = offset;
   }
 
   void scratchLayout(std::vector<uint32_t>& levels, std::vector<uint32_t>& offsets, uint32_t N)
@@ -224,27 +248,19 @@ namespace {
 
     uint32_t o = 0;
     offsets[levels.size()] = o;  // Apex
-    o += 128;
+    o += 32;
 
     for (int i = static_cast<int>(levels.size()) - 1; 0 <= i; i--) {
       offsets[i] = o; // HP level i
-      o += 32 * 4 * levels[i];
+      o += 32 * levels[i];
     }
     offsets[levels.size() + 1] = o; // Large sideband buffer
-    o += 32 * (levels.empty() ? 0 : levels[0]);
+    o += (32 / 4) * (levels.empty() ? 0 : levels[0]);
 
     offsets[levels.size() + 2] = o; // Small sideband buffer
-    o += 32 * (levels.size() < 2 ? 0 : levels[1]);
+    o += (32 / 4) * (levels.size() < 2 ? 0 : levels[1]);
 
     offsets[levels.size() + 3] = o; // Final size
-  }
-
-  template<uint32_t L>
-  OffsetBlob<L> arrayFromVector(const std::vector<uint32_t> src)
-  {
-    OffsetBlob<L> rv;
-    for (uint32_t i = 0; i < L; i++) rv.data[i] = src[i];
-    return rv;
   }
 
 }
@@ -278,40 +294,44 @@ void ComputeStuff::HP5::compact(uint32_t* out_d,
                                                   N);
   }
   else {
-    ::reduce1<true><<<levels[0], 160, 0, stream>>>(reinterpret_cast<uint4*>(scratch_d + offsets[0]),
-                                                   scratch_d + offsets[L + 1],
+    ::reduce1<true><<<levels[0], 160, 0, stream>>>(reinterpret_cast<uint4*>(scratch_d) + offsets[0],
+                                                   scratch_d + 4 * offsets[L + 1],
                                                    in_d,
                                                    N);
     for (size_t i = 1; i < levels.size(); i++) {
-      ::reduce1<false><<<levels[i], 160, 0, stream>>>(reinterpret_cast<uint4*>(scratch_d + offsets[i]),
-                                                      scratch_d + offsets[L + 1 + ((i + 0) & 1)],
-                                                      scratch_d + offsets[L + 1 + ((i + 1) & 1)],
+      ::reduce1<false><<<levels[i], 160, 0, stream>>>(reinterpret_cast<uint4*>(scratch_d) + offsets[i],
+                                                      scratch_d + 4*offsets[L + 1 + ((i + 0) & 1)],
+                                                      scratch_d + 4*offsets[L + 1 + ((i + 1) & 1)],
                                                       32 * levels[i - 1]);
 
     }
     ::reduceApex<false, true><<<1, 128, 0, stream>>>(reinterpret_cast<uint4*>(scratch_d),
                                                      sum_d,
-                                                     scratch_d + offsets[L + 1 + ((L + 1) & 1)],
+                                                     scratch_d + 4*offsets[L + 1 + ((L + 1) & 1)],
                                                      32 * levels[L - 1]);
   }
 
+
+  OffsetBlob offsetBlob;
+  std::memcpy(&offsetBlob.data0, offsets.data(), sizeof(uint32_t)*std::min(size_t(12), L));
+
   switch (L)
   {
-  case 0: ::extract<0, 1><<<(N + 127) / 128, 127, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), arrayFromVector<1>(offsets)); break;
-  case 1: ::extract<1, 1><<<(N + 127) / 128, 127, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), arrayFromVector<1>(offsets)); break;
-  case 2: {
-    auto moo = arrayFromVector<2>(offsets);
-    ::extract<2, 2> << <(N + 127) / 128, 127, 0, stream >> > (out_d, reinterpret_cast<uint4*>(scratch_d), moo); break;
-
-  }
-  case 3: ::extract<3, 3><<<(N + 127) / 128, 127, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), arrayFromVector<3>(offsets)); break;
-  case 4: ::extract<4, 4><<<(N + 127) / 128, 127, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), arrayFromVector<4>(offsets)); break;
-  case 5: ::extract<5, 5><<<(N + 127) / 128, 127, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), arrayFromVector<5>(offsets)); break;
-  case 6: ::extract<6, 6><<<(N + 127) / 128, 127, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), arrayFromVector<6>(offsets)); break;
-  case 7: ::extract<7, 7><<<(N + 127) / 128, 127, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), arrayFromVector<7>(offsets)); break;
+  case 0: ::extract<0><<<(N + 127) / 128, 128, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), offsetBlob); break;
+  case 1: ::extract<1><<<(N + 127) / 128, 128, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), offsetBlob); break;
+  case 2: ::extract<2><<<(N + 127) / 128, 128, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), offsetBlob); break;
+  case 3: ::extract<3><<<(N + 127) / 128, 128, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), offsetBlob); break;
+  case 4: ::extract<4><<<(N + 127) / 128, 128, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), offsetBlob); break;
+  case 5: ::extract<5><<<(N + 127) / 128, 128, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), offsetBlob); break;
+  case 6: ::extract<6><<<(N + 127) / 128, 128, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), offsetBlob); break;
+  case 7: ::extract<7><<<(N + 127) / 128, 128, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), offsetBlob); break;
+  case 8: ::extract<8><<<(N + 127) / 128, 128, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), offsetBlob); break;
+  case 9: ::extract<9><<<(N + 127) / 128, 128, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), offsetBlob); break;
+  case 10: ::extract<10><<<(N + 127) / 128, 128, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), offsetBlob); break;
+  case 11: ::extract<11><<<(N + 127) / 128, 128, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), offsetBlob); break;
   default:
+    abort();
     break;
-//    abort();
   }
 
 #if 1
