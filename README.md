@@ -2,15 +2,15 @@
 
 MIT-licensed stand-alone CUDA utility functions.
 
-* [Introduction](#Introduction)
-  * [How to use](#How-to-use)
-    * [Scratch buffer](#Scratch-buffer)
-    * [In-place operation](#In-place-operation)
-    * [Write sum](#Write-sum)
-    * [Concurrent invocations](#Concurrent-invocations)
-* [Prefix sum / Scan](#Prefix-sum-Scan)
-  * [Performance](#Performance)
-* [5:1 HistoPyramids](#HistoPyramids)
+* [Introduction](#introduction)
+  * [How to use](#how-to-use)
+    * [Scratch buffer](#scratch-buffer)
+    * [In-place operation](#in-place-operation)
+    * [Write sum](#write-sum)
+    * [Concurrent invocations](#concurrent-invocations)
+* [Prefix sum / Scan](#prefix-sum-Scan)
+  * [Performance](#performance)
+* [5:1 HistoPyramids](#histoPyramids)
 
 ## Introduction
 
