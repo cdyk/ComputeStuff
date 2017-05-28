@@ -203,29 +203,33 @@ namespace {
     const uint32_t m16 = 0xffffu;
     const uint32_t c16 = __popc(mask & m16);
     if (c16 <= key) {  // Key is in upper 16 bits
+      key -= c16;
       offset += 16;
       mask = mask >> 16;
     }
     const uint32_t m8 = 0xffu;
     const uint32_t c8 = __popc(mask & m8);
     if(c8 <= key) { // Key is in upper 8 bits
+      key -= c8;
       offset += 8;
       mask = mask >> 8;
     }
     const uint32_t m4 = 0xfu;
     const uint32_t c4 = __popc(mask & m4);
     if (c4 <= key) { // Key is in upper 4 bits
+      key -= c4;
       offset += 4;
       mask = mask >> 4;
     }
     const uint32_t m2 = 0x3u;
     const uint32_t c2 = __popc(mask & m2);
     if (c2 <= key) { // Key is in upper 2 bits
+      key -= c2;
       offset += 2;
       mask = mask >> 2;
     }
 
-    if (mask & 0x1) {
+    if ((mask & 0x1) <= key) {
       offset++;
     }
     return offset;
