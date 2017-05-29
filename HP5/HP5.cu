@@ -16,11 +16,11 @@
 namespace {
 
 
-  __global__ void reduceBase(uint32_t* __restrict__ hp_d,
-                             uint32_t* __restrict__ sb_d,
-                             const uint32_t n1,
-                             const uint32_t* __restrict__ src,
-                             const uint32_t n0)
+  __global__ __launch_bounds__(128) void reduceBase(uint32_t* __restrict__ hp_d,
+                                                    uint32_t* __restrict__ sb_d,
+                                                    const uint32_t n1,
+                                                    const uint32_t* __restrict__ src,
+                                                    const uint32_t n0)
   {
     const uint32_t offset0 = blockDim.x * blockIdx.x + threadIdx.x;
     const uint32_t lane = threadIdx.x %  HP5_WARP_SIZE;
@@ -275,7 +275,7 @@ namespace {
     if (11 < L) offsets[11] = offsetBlob.dataB;
 
     uint32_t N = hp_d[0];
-    uint4 T = ((const uint4*)hp_d)[1];
+    uint4 T = *(const uint4*)(hp_d + 4);
 
     for (uint32_t k = HP5_EXTRACT_BLOCKSIZE * blockIdx.x; k < N; k += HP5_EXTRACT_BLOCKS * HP5_EXTRACT_BLOCKSIZE) {
       const uint32_t index = k + threadIdx.x;
@@ -283,10 +283,10 @@ namespace {
         uint32_t offset = 0;
         uint32_t key = index;
         offset = processHistoElement(key, 5 * offset, T);
-        offset = processHistoElement(key, 5 * offset, ((const uint4*)hp_d)[2 + offset]);
-        offset = processHistoElement(key, 5 * offset, ((const uint4*)hp_d)[7 + offset]);
+        offset = processHistoElement(key, 5 * offset, *(const uint4*)(hp_d + 8 + 4 * offset));
+        offset = processHistoElement(key, 5 * offset, *(const uint4*)(hp_d + 28 + 4 * offset));
         for (uint32_t i = L; 1 < i; i--) {
-          offset = processDataElement(key, 5 * offset, ((const uint4*)(hp_d + offsets[i - 1]))[offset]);
+          offset = processDataElement(key, 5 * offset, *(const uint4*)(hp_d + offsets[i - 1] + 4 * offset));
         }
         out_d[index] = processMaskElement(key, 32 * offset, hp_d[offsets[0] + offset]);
       }
@@ -354,10 +354,6 @@ void ComputeStuff::HP5::compact(uint32_t* out_d,
   auto L = levels.size();
   if (L == 0) {
     assert(false);
-/*    reduceApex<true, true><<<1, 128, 0, stream>>>(reinterpret_cast<uint4*>(scratch_d),
-                                                  sum_d,
-                                                  in_d,
-                                                  N);*/
   }
   else {
     ::reduceBase<<<(levels[0] + 3)/4, 4*32, 0, stream>>>(scratch_d + offsets[0],
@@ -365,11 +361,6 @@ void ComputeStuff::HP5::compact(uint32_t* out_d,
                                                          levels[0],
                                                          in_d,
                                                          N);
-
-    //::reduce1<true><<<levels[0], 160, 0, stream>>>(reinterpret_cast<uint4*>(scratch_d) + offsets[0],
-    //                                               scratch_d + 4 * offsets[L + 1],
-    //                                               in_d,
-    //                                               N);
     for (size_t i = 1; i < levels.size(); i++) {
       ::reduce1<<<(levels[i] + 31)/32, 160, 0, stream>>>(reinterpret_cast<uint4*>(scratch_d + offsets[i]),
                                                          scratch_d + offsets[L + 1 + ((i + 0) & 1)],
