@@ -35,7 +35,7 @@ namespace {
     }
   }
 
-  __global__ __launch_bounds__(128) void reduceBase2(uint32_t* __restrict__ hp2_d,
+  __global__ __launch_bounds__(256) void reduceBase2(uint32_t* __restrict__ hp2_d,
                                                      uint32_t* __restrict__ sb2_d,
                                                      const uint32_t n2,
                                                      uint32_t* __restrict__ hp1_d,
@@ -43,31 +43,31 @@ namespace {
                                                      const uint32_t* __restrict__ sb0_d,
                                                      const uint32_t n0)
   {
-    const uint32_t offset0_base = 160 * blockDim.x * blockIdx.x + threadIdx.x;
-    const uint32_t offset1_base = offset0_base / HP5_WARP_SIZE;
+    const uint32_t offset0_base = 32 * 160 * blockIdx.x + threadIdx.x;
+    const uint32_t offset1_base = 160 * blockIdx.x;
 
     const uint32_t lane = threadIdx.x %  HP5_WARP_SIZE;
     const uint32_t warp = threadIdx.x / HP5_WARP_SIZE;
 
     __shared__ uint32_t sb1[160];
 
-    for (uint32_t i = 0; i < 5; i++) {
-      const uint32_t offset0 = offset0_base + 128 * i;
+    for (uint32_t i = 0; i < 20; i++) {
+      const uint32_t offset0 = offset0_base + 256 * i;
       const uint32_t value = offset0 < n0 ? sb0_d[offset0] : 0;
       const uint32_t warpMask = __ballot(value != 0);
       if (lane == 0) {
-        const uint32_t offset1 = offset1_base + 4 * i;
+        const uint32_t offset1 = offset1_base + 8 * i + warp;
         if (offset1 < n1) {
           hp1_d[offset1] = warpMask;
         }
-        sb1[4 * i + warp] = __popc(warpMask);
+        sb1[8 * i + warp] = __popc(warpMask);
       }
     }
 
     __syncthreads();
     if (threadIdx.x < HP5_WARP_SIZE) { // First warp
       const uint32_t offset2 = 32 * blockIdx.x + threadIdx.x;
-      if (offset2 < n1) {
+      if (offset2 < n2) {
         uint4 hp = make_uint4(sb1[5 * threadIdx.x + 0],
                               sb1[5 * threadIdx.x + 1],
                               sb1[5 * threadIdx.x + 2],
@@ -402,14 +402,30 @@ void ComputeStuff::HP5::compact(uint32_t* out_d,
   else {
     bool sb = false;
 
-    ::reduceBase<<<(levels[0] + 3)/4, 4*32, 0, stream>>>(scratch_d + offsets[0],
-                                                         scratch_d + offsets[L + 1 + (sb?1:0)],
-                                                         levels[0],
-                                                         in_d,
-                                                         N);
-    sb = !sb;
+    size_t i = 0;
+    if (1 < L) {
+      ::reduceBase2<<<(levels[1] + 31) / 32, 8 * 32, 0, stream>>>(scratch_d + offsets[1],
+                                                                  scratch_d + offsets[L + 1 + (sb ? 1 : 0)],
+                                                                  levels[1],
+                                                                  scratch_d + offsets[0],
+                                                                  levels[0],
+                                                                  in_d,
+                                                                  N);
+      i += 2;
+      sb = !sb;
+    }
+    else if (0 < L) {
+      ::reduceBase << <(levels[0] + 3) / 4, 4 * 32, 0, stream >> > (scratch_d + offsets[0],
+                                                                    scratch_d + offsets[L + 1 + (sb ? 1 : 0)],
+                                                                    levels[0],
+                                                                    in_d,
+                                                                    N);
+      i += 1;
+      sb = !sb;
+    }
 
-    for (size_t i = 1; i < levels.size(); i++) {
+
+    for (; i < L; i++) {
       ::reduce1<<<(levels[i] + 31)/32, 160, 0, stream>>>(reinterpret_cast<uint4*>(scratch_d + offsets[i]),
                                                          scratch_d + offsets[L + 1 + (sb ? 1 : 0)],
                                                          levels[i],
