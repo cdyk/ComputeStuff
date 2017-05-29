@@ -400,22 +400,26 @@ void ComputeStuff::HP5::compact(uint32_t* out_d,
     assert(false);
   }
   else {
+    bool sb = false;
+
     ::reduceBase<<<(levels[0] + 3)/4, 4*32, 0, stream>>>(scratch_d + offsets[0],
-                                                         scratch_d + offsets[L + 1],
+                                                         scratch_d + offsets[L + 1 + (sb?1:0)],
                                                          levels[0],
                                                          in_d,
                                                          N);
+    sb = !sb;
+
     for (size_t i = 1; i < levels.size(); i++) {
       ::reduce1<<<(levels[i] + 31)/32, 160, 0, stream>>>(reinterpret_cast<uint4*>(scratch_d + offsets[i]),
-                                                         scratch_d + offsets[L + 1 + ((i + 0) & 1)],
+                                                         scratch_d + offsets[L + 1 + (sb ? 1 : 0)],
                                                          levels[i],
-                                                         scratch_d + offsets[L + 1 + ((i + 1) & 1)],
+                                                         scratch_d + offsets[L + 1 + (sb ? 0 : 1)],
                                                          levels[i - 1]);
-
+      sb = !sb;
     }
     ::reduceApex<false, true><<<1, 128, 0, stream>>>(reinterpret_cast<uint4*>(scratch_d),
                                                      sum_d,
-                                                     scratch_d + offsets[L + 1 + ((L + 1) & 1)],
+                                                     scratch_d + offsets[L + 1 + (sb ? 0 : 1)],
                                                      levels[L - 1]);
   }
 
