@@ -15,36 +15,54 @@
 
 namespace {
 
-  // Reads 160 values, outputs HP level of 128 values, and 32 sideband values.
 
-  template<bool mask_input>
+  __global__ __launch_bounds__(128) void reduceBase(uint32_t* __restrict__ hp_d,
+                                                    uint32_t* __restrict__ sb_d,
+                                                    const uint32_t n1,
+                                                    const uint32_t* __restrict__ src,
+                                                    const uint32_t n0)
+  {
+    const uint32_t offset0 = blockDim.x * blockIdx.x + threadIdx.x;
+    const uint32_t lane = threadIdx.x %  HP5_WARP_SIZE;
+    const uint32_t value = offset0 < n0 ? src[offset0] : 0;
+    const uint32_t warpMask = __ballot(value != 0);
+    if (lane == 0) {
+      const uint32_t offset1 = offset0 / HP5_WARP_SIZE;
+      if (offset1 < n1) {
+        hp_d[offset1] = warpMask;
+        sb_d[offset1] = __popc(warpMask);
+      }
+    }
+  }
+
+  // Reads 160 values, outputs HP level of 128 values, and 32 sideband values.
   __global__
   __launch_bounds__(HP5_WARP_COUNT * HP5_WARP_SIZE)
   void
   reduce1(uint4* __restrict__ hp1_d,
           uint32_t* __restrict__ sb1_d,
+          const uint32_t n1,
           const uint32_t* __restrict__ sb0_d,
-          uint32_t N)
+          const uint32_t n0)
   {
-    const uint32_t threadOffset = HP5_WARP_COUNT * HP5_WARP_SIZE * blockIdx.x + threadIdx.x;
+    const uint32_t offset0 = HP5_WARP_COUNT * HP5_WARP_SIZE * blockIdx.x + threadIdx.x;
 
     // Idea, each warp reads 32 values. read instead 32/4 uint4's.
 
     __shared__ uint32_t sb[HP5_WARP_COUNT * HP5_WARP_SIZE];
-    uint32_t a = threadOffset < N ? sb0_d[threadOffset] : 0;
-    if (mask_input) {
-      a = a != 0 ? 1 : 0;
-    }
-    sb[threadIdx.x] = a;
+    sb[threadIdx.x] = offset0 < n0 ? sb0_d[offset0] : 0;
 
     __syncthreads();
     if (threadIdx.x < HP5_WARP_SIZE) { // First warp
-      uint4 hp = make_uint4(sb[5 * threadIdx.x + 0],
-                            sb[5 * threadIdx.x + 1],
-                            sb[5 * threadIdx.x + 2],
-                            sb[5 * threadIdx.x + 3]);
-      hp1_d[32 * blockIdx.x + threadIdx.x] = hp;
-      sb1_d[32 * blockIdx.x + threadIdx.x] = hp.x + hp.y + hp.z + hp.w + sb[5 * threadIdx.x + 4];
+      const uint32_t offset1 = 32 * blockIdx.x + threadIdx.x;
+      if (offset1 < n1) {
+        uint4 hp = make_uint4(sb[5 * threadIdx.x + 0],
+                              sb[5 * threadIdx.x + 1],
+                              sb[5 * threadIdx.x + 2],
+                              sb[5 * threadIdx.x + 3]);
+        hp1_d[offset1] = hp;
+        sb1_d[offset1] = hp.x + hp.y + hp.z + hp.w + sb[5 * threadIdx.x + 4];
+      }
     }
   }
 
@@ -133,8 +151,7 @@ namespace {
     uint32_t value[L];
   };*/
 
-  __device__
-  inline uint32_t processHistoElement(uint32_t& key, uint32_t offset, const uint4 element)
+  __device__ __forceinline__ uint32_t processHistoElement(uint32_t& key, uint32_t offset, const uint4 element)
   {
     assert(element.x <= element.y);
     assert(element.y <= element.z);
@@ -161,8 +178,7 @@ namespace {
     return offset;
   }
 
-  __device__
-  inline uint32_t processDataElement(uint32_t& key, uint32_t offset, const uint4 element)
+  __device__ __forceinline__ uint32_t processDataElement(uint32_t& key, uint32_t offset, const uint4 element)
   {
     if (element.x <= key) {
       key -= element.x;
@@ -179,6 +195,43 @@ namespace {
           }
         }
       }
+    }
+    return offset;
+  }
+
+  __device__ __forceinline__ uint32_t processMaskElement(uint32_t& key, uint32_t offset, uint32_t mask)
+  {
+    const uint32_t m16 = 0xffffu;
+    const uint32_t c16 = __popc(mask & m16);
+    if (c16 <= key) {  // Key is in upper 16 bits
+      key -= c16;
+      offset += 16;
+      mask = mask >> 16;
+    }
+    const uint32_t m8 = 0xffu;
+    const uint32_t c8 = __popc(mask & m8);
+    if(c8 <= key) { // Key is in upper 8 bits
+      key -= c8;
+      offset += 8;
+      mask = mask >> 8;
+    }
+    const uint32_t m4 = 0xfu;
+    const uint32_t c4 = __popc(mask & m4);
+    if (c4 <= key) { // Key is in upper 4 bits
+      key -= c4;
+      offset += 4;
+      mask = mask >> 4;
+    }
+    const uint32_t m2 = 0x3u;
+    const uint32_t c2 = __popc(mask & m2);
+    if (c2 <= key) { // Key is in upper 2 bits
+      key -= c2;
+      offset += 2;
+      mask = mask >> 2;
+    }
+
+    if ((mask & 0x1) <= key) {
+      offset++;
     }
     return offset;
   }
@@ -203,8 +256,8 @@ namespace {
   __global__
   __launch_bounds__(128)
   void extract(uint32_t* __restrict__ out_d,
-               const uint4* __restrict__ hp_d,
-               OffsetBlob offsetBlob)
+               const uint32_t* __restrict__ hp_d,
+               const OffsetBlob offsetBlob)
   {
 
     __shared__ uint32_t offsets[12];
@@ -221,8 +274,8 @@ namespace {
     if (10 < L) offsets[10] = offsetBlob.dataA;
     if (11 < L) offsets[11] = offsetBlob.dataB;
 
-    uint32_t N = hp_d[0].x;
-    uint4 T = hp_d[1];
+    uint32_t N = hp_d[0];
+    uint4 T = *(const uint4*)(hp_d + 4);
 
     for (uint32_t k = HP5_EXTRACT_BLOCKSIZE * blockIdx.x; k < N; k += HP5_EXTRACT_BLOCKS * HP5_EXTRACT_BLOCKSIZE) {
       const uint32_t index = k + threadIdx.x;
@@ -230,12 +283,12 @@ namespace {
         uint32_t offset = 0;
         uint32_t key = index;
         offset = processHistoElement(key, 5 * offset, T);
-        offset = processHistoElement(key, 5 * offset, hp_d[2 + offset]);
-        offset = processHistoElement(key, 5 * offset, hp_d[7 + offset]);
-        for (uint32_t i = L; 0 < i; i--) {
-          offset = processDataElement(key, 5 * offset, hp_d[offsets[i - 1] + offset]);
+        offset = processHistoElement(key, 5 * offset, *(const uint4*)(hp_d + 8 + 4 * offset));
+        offset = processHistoElement(key, 5 * offset, *(const uint4*)(hp_d + 28 + 4 * offset));
+        for (uint32_t i = L; 1 < i; i--) {
+          offset = processDataElement(key, 5 * offset, *(const uint4*)(hp_d + offsets[i - 1] + 4 * offset));
         }
-        out_d[index] = offset;
+        out_d[index] = processMaskElement(key, 32 * offset, hp_d[offsets[0] + offset]);
       }
     }
   }
@@ -243,30 +296,34 @@ namespace {
   void scratchLayout(std::vector<uint32_t>& levels, std::vector<uint32_t>& offsets, uint32_t N)
   {
     if (N == 0) return;
-
-    // Apex-level is always present.
-    // Levels below apex, reduction is done in 160 -> 32 blocks.
-    while (125 < N) {
-      levels.push_back((N + 159) / 160);  // Number of blocks per level
-      N = 32 * levels.back();
+    
+    levels.clear();
+    levels.push_back((N + 31) / 32);
+    while (125 < levels.back())
+    {
+      levels.push_back((levels.back() + 4) / 5);
     }
-
-
+    
     offsets.resize(levels.size() + 4);
 
     uint32_t o = 0;
     offsets[levels.size()] = o;  // Apex
-    o += 32;
+    o += 32 * 4;
 
-    for (int i = static_cast<int>(levels.size()) - 1; 0 <= i; i--) {
+    for (int i = static_cast<int>(levels.size()) - 1; 0 < i; i--) {
       offsets[i] = o; // HP level i
-      o += 32 * levels[i];
+      o += 4 * levels[i];
     }
+
+    // level zero
+    offsets[0] = o;
+    o += (levels[0] + 3) & ~3;
+
     offsets[levels.size() + 1] = o; // Large sideband buffer
-    o += (32 / 4) * (levels.empty() ? 0 : levels[0]);
+    o += levels.empty() ? 0 : (levels[0] + 3) & ~3;
 
     offsets[levels.size() + 2] = o; // Small sideband buffer
-    o += (32 / 4) * (levels.size() < 2 ? 0 : levels[1]);
+    o += levels.size() < 2 ? 0 : (levels[1] + 3) & ~3;
 
     offsets[levels.size() + 3] = o; // Final size
   }
@@ -296,27 +353,26 @@ void ComputeStuff::HP5::compact(uint32_t* out_d,
 
   auto L = levels.size();
   if (L == 0) {
-    reduceApex<true, true><<<1, 128, 0, stream>>>(reinterpret_cast<uint4*>(scratch_d),
-                                                  sum_d,
-                                                  in_d,
-                                                  N);
+    assert(false);
   }
   else {
-    ::reduce1<true><<<levels[0], 160, 0, stream>>>(reinterpret_cast<uint4*>(scratch_d) + offsets[0],
-                                                   scratch_d + 4 * offsets[L + 1],
-                                                   in_d,
-                                                   N);
+    ::reduceBase<<<(levels[0] + 3)/4, 4*32, 0, stream>>>(scratch_d + offsets[0],
+                                                         scratch_d + offsets[L + 1],
+                                                         levels[0],
+                                                         in_d,
+                                                         N);
     for (size_t i = 1; i < levels.size(); i++) {
-      ::reduce1<false><<<levels[i], 160, 0, stream>>>(reinterpret_cast<uint4*>(scratch_d) + offsets[i],
-                                                      scratch_d + 4*offsets[L + 1 + ((i + 0) & 1)],
-                                                      scratch_d + 4*offsets[L + 1 + ((i + 1) & 1)],
-                                                      32 * levels[i - 1]);
+      ::reduce1<<<(levels[i] + 31)/32, 160, 0, stream>>>(reinterpret_cast<uint4*>(scratch_d + offsets[i]),
+                                                         scratch_d + offsets[L + 1 + ((i + 0) & 1)],
+                                                         levels[i],
+                                                         scratch_d + offsets[L + 1 + ((i + 1) & 1)],
+                                                         levels[i - 1]);
 
     }
     ::reduceApex<false, true><<<1, 128, 0, stream>>>(reinterpret_cast<uint4*>(scratch_d),
                                                      sum_d,
-                                                     scratch_d + 4*offsets[L + 1 + ((L + 1) & 1)],
-                                                     32 * levels[L - 1]);
+                                                     scratch_d + offsets[L + 1 + ((L + 1) & 1)],
+                                                     levels[L - 1]);
   }
 
 
@@ -330,18 +386,18 @@ void ComputeStuff::HP5::compact(uint32_t* out_d,
   auto B = std::min(uint32_t(HP5_EXTRACT_BLOCKS), (N + HP5_EXTRACT_BLOCKSIZE - 1) / HP5_EXTRACT_BLOCKSIZE);
   switch (L)
   {
-  case 0: ::extract<0><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), offsetBlob); break;
-  case 1: ::extract<1><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), offsetBlob); break;
-  case 2: ::extract<2><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), offsetBlob); break;
-  case 3: ::extract<3><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), offsetBlob); break;
-  case 4: ::extract<4><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), offsetBlob); break;
-  case 5: ::extract<5><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), offsetBlob); break;
-  case 6: ::extract<6><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), offsetBlob); break;
-  case 7: ::extract<7><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), offsetBlob); break;
-  case 8: ::extract<8><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), offsetBlob); break;
-  case 9: ::extract<9><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), offsetBlob); break;
-  case 10: ::extract<10><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), offsetBlob); break;
-  case 11: ::extract<11><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, reinterpret_cast<uint4*>(scratch_d), offsetBlob); break;
+  case 0: ::extract<0><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, scratch_d, offsetBlob); break;
+  case 1: ::extract<1><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, scratch_d, offsetBlob); break;
+  case 2: ::extract<2><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, scratch_d, offsetBlob); break;
+  case 3: ::extract<3><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, scratch_d, offsetBlob); break;
+  case 4: ::extract<4><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, scratch_d, offsetBlob); break;
+  case 5: ::extract<5><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, scratch_d, offsetBlob); break;
+  case 6: ::extract<6><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, scratch_d, offsetBlob); break;
+  case 7: ::extract<7><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, scratch_d, offsetBlob); break;
+  case 8: ::extract<8><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, scratch_d, offsetBlob); break;
+  case 9: ::extract<9><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, scratch_d, offsetBlob); break;
+  case 10: ::extract<10><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, scratch_d, offsetBlob); break;
+  case 11: ::extract<11><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, scratch_d, offsetBlob); break;
   default:
     abort();
     break;
