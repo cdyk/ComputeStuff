@@ -35,6 +35,50 @@ namespace {
     }
   }
 
+  __global__ __launch_bounds__(128) void reduceBase2(uint32_t* __restrict__ hp2_d,
+                                                     uint32_t* __restrict__ sb2_d,
+                                                     const uint32_t n2,
+                                                     uint32_t* __restrict__ hp1_d,
+                                                     const uint32_t n1,
+                                                     const uint32_t* __restrict__ sb0_d,
+                                                     const uint32_t n0)
+  {
+    const uint32_t offset0_base = 160 * blockDim.x * blockIdx.x + threadIdx.x;
+    const uint32_t offset1_base = offset0_base / HP5_WARP_SIZE;
+
+    const uint32_t lane = threadIdx.x %  HP5_WARP_SIZE;
+    const uint32_t warp = threadIdx.x / HP5_WARP_SIZE;
+
+    __shared__ uint32_t sb1[160];
+
+    for (uint32_t i = 0; i < 5; i++) {
+      const uint32_t offset0 = offset0_base + 128 * i;
+      const uint32_t value = offset0 < n0 ? sb0_d[offset0] : 0;
+      const uint32_t warpMask = __ballot(value != 0);
+      if (lane == 0) {
+        const uint32_t offset1 = offset1_base + 4 * i;
+        if (offset1 < n1) {
+          hp1_d[offset1] = warpMask;
+        }
+        sb1[4 * i + warp] = __popc(warpMask);
+      }
+    }
+
+    __syncthreads();
+    if (threadIdx.x < HP5_WARP_SIZE) { // First warp
+      const uint32_t offset2 = 32 * blockIdx.x + threadIdx.x;
+      if (offset2 < n1) {
+        uint4 hp = make_uint4(sb1[5 * threadIdx.x + 0],
+                              sb1[5 * threadIdx.x + 1],
+                              sb1[5 * threadIdx.x + 2],
+                              sb1[5 * threadIdx.x + 3]);
+        ((uint4*)hp2_d)[offset2] = hp;
+        sb2_d[offset2] = hp.x + hp.y + hp.z + hp.w + sb1[5 * threadIdx.x + 4];
+      }
+    }
+
+  }
+
   // Reads 160 values, outputs HP level of 128 values, and 32 sideband values.
   __global__
   __launch_bounds__(HP5_WARP_COUNT * HP5_WARP_SIZE)
