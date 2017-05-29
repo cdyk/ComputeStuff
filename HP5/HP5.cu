@@ -35,6 +35,50 @@ namespace {
     }
   }
 
+  __global__ __launch_bounds__(256) void reduceBase2(uint32_t* __restrict__ hp2_d,
+                                                     uint32_t* __restrict__ sb2_d,
+                                                     const uint32_t n2,
+                                                     uint32_t* __restrict__ hp1_d,
+                                                     const uint32_t n1,
+                                                     const uint32_t* __restrict__ sb0_d,
+                                                     const uint32_t n0)
+  {
+    const uint32_t offset0_base = 32 * 160 * blockIdx.x + threadIdx.x;
+    const uint32_t offset1_base = 160 * blockIdx.x;
+
+    const uint32_t lane = threadIdx.x %  HP5_WARP_SIZE;
+    const uint32_t warp = threadIdx.x / HP5_WARP_SIZE;
+
+    __shared__ uint32_t sb1[160];
+
+    for (uint32_t i = 0; i < 20; i++) {
+      const uint32_t offset0 = offset0_base + 256 * i;
+      const uint32_t value = offset0 < n0 ? sb0_d[offset0] : 0;
+      const uint32_t warpMask = __ballot(value != 0);
+      if (lane == 0) {
+        const uint32_t offset1 = offset1_base + 8 * i + warp;
+        if (offset1 < n1) {
+          hp1_d[offset1] = warpMask;
+        }
+        sb1[8 * i + warp] = __popc(warpMask);
+      }
+    }
+
+    __syncthreads();
+    if (threadIdx.x < HP5_WARP_SIZE) { // First warp
+      const uint32_t offset2 = 32 * blockIdx.x + threadIdx.x;
+      if (offset2 < n2) {
+        uint4 hp = make_uint4(sb1[5 * threadIdx.x + 0],
+                              sb1[5 * threadIdx.x + 1],
+                              sb1[5 * threadIdx.x + 2],
+                              sb1[5 * threadIdx.x + 3]);
+        ((uint4*)hp2_d)[offset2] = hp;
+        sb2_d[offset2] = hp.x + hp.y + hp.z + hp.w + sb1[5 * threadIdx.x + 4];
+      }
+    }
+
+  }
+
   // Reads 160 values, outputs HP level of 128 values, and 32 sideband values.
   __global__
   __launch_bounds__(HP5_WARP_COUNT * HP5_WARP_SIZE)
@@ -356,22 +400,42 @@ void ComputeStuff::HP5::compact(uint32_t* out_d,
     assert(false);
   }
   else {
-    ::reduceBase<<<(levels[0] + 3)/4, 4*32, 0, stream>>>(scratch_d + offsets[0],
-                                                         scratch_d + offsets[L + 1],
-                                                         levels[0],
-                                                         in_d,
-                                                         N);
-    for (size_t i = 1; i < levels.size(); i++) {
-      ::reduce1<<<(levels[i] + 31)/32, 160, 0, stream>>>(reinterpret_cast<uint4*>(scratch_d + offsets[i]),
-                                                         scratch_d + offsets[L + 1 + ((i + 0) & 1)],
-                                                         levels[i],
-                                                         scratch_d + offsets[L + 1 + ((i + 1) & 1)],
-                                                         levels[i - 1]);
+    bool sb = false;
 
+    size_t i = 0;
+    if (1 < L) {
+      ::reduceBase2<<<(levels[1] + 31) / 32, 8 * 32, 0, stream>>>(scratch_d + offsets[1],
+                                                                  scratch_d + offsets[L + 1 + (sb ? 1 : 0)],
+                                                                  levels[1],
+                                                                  scratch_d + offsets[0],
+                                                                  levels[0],
+                                                                  in_d,
+                                                                  N);
+      i += 2;
+      sb = !sb;
+    }
+    else if (0 < L) {
+      ::reduceBase << <(levels[0] + 3) / 4, 4 * 32, 0, stream >> > (scratch_d + offsets[0],
+                                                                    scratch_d + offsets[L + 1 + (sb ? 1 : 0)],
+                                                                    levels[0],
+                                                                    in_d,
+                                                                    N);
+      i += 1;
+      sb = !sb;
+    }
+
+
+    for (; i < L; i++) {
+      ::reduce1<<<(levels[i] + 31)/32, 160, 0, stream>>>(reinterpret_cast<uint4*>(scratch_d + offsets[i]),
+                                                         scratch_d + offsets[L + 1 + (sb ? 1 : 0)],
+                                                         levels[i],
+                                                         scratch_d + offsets[L + 1 + (sb ? 0 : 1)],
+                                                         levels[i - 1]);
+      sb = !sb;
     }
     ::reduceApex<false, true><<<1, 128, 0, stream>>>(reinterpret_cast<uint4*>(scratch_d),
                                                      sum_d,
-                                                     scratch_d + offsets[L + 1 + ((L + 1) & 1)],
+                                                     scratch_d + offsets[L + 1 + (sb ? 0 : 1)],
                                                      levels[L - 1]);
   }
 
