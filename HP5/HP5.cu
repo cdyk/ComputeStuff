@@ -283,6 +283,31 @@ namespace {
     return offset;
   }
 
+  __device__ __forceinline__ uint4 processDataElement(uint4& key, uint4 offset, const uint4 elementA, const uint4 elementB, const uint4 elementC, const uint4 elementD)
+  {
+    bool enterA = elementA.x <= key.x; if (enterA) { key.x -= elementA.x; offset.x++; }
+    bool enterB = elementB.x <= key.y; if (enterB) { key.y -= elementB.x; offset.y++; }
+    bool enterC = elementC.x <= key.z; if (enterC) { key.z -= elementC.x; offset.z++; }
+    bool enterD = elementD.x <= key.w; if (enterD) { key.w -= elementD.x; offset.w++; }
+
+    enterA = enterA && elementA.y <= key.x; if (enterA) { key.x -= elementA.y; offset.x++; }
+    enterB = enterB && elementB.y <= key.y; if (enterB) { key.y -= elementB.y; offset.y++; }
+    enterC = enterC && elementC.y <= key.z; if (enterC) { key.z -= elementC.y; offset.z++; }
+    enterD = enterD && elementD.y <= key.w; if (enterD) { key.w -= elementD.y; offset.w++; }
+
+    enterA = enterA && elementA.z <= key.x; if (enterA) { key.x -= elementA.z; offset.x++; }
+    enterB = enterB && elementB.z <= key.y; if (enterB) { key.y -= elementB.z; offset.y++; }
+    enterC = enterC && elementC.z <= key.z; if (enterC) { key.z -= elementC.z; offset.z++; }
+    enterD = enterD && elementD.z <= key.w; if (enterD) { key.w -= elementD.z; offset.w++; }
+
+    enterA = enterA && elementA.w <= key.x; if (enterA) { key.x -= elementA.w; offset.x++; }
+    enterB = enterB && elementB.w <= key.y; if (enterB) { key.y -= elementB.w; offset.y++; }
+    enterC = enterC && elementC.w <= key.z; if (enterC) { key.z -= elementC.w; offset.z++; }
+    enterD = enterD && elementD.w <= key.w; if (enterD) { key.w -= elementD.w; offset.w++; }
+
+    return offset;
+  }
+
 
   __device__ __forceinline__ uint32_t processDataElement(uint32_t& key, uint32_t offset, const uint4 element)
   {
@@ -438,10 +463,18 @@ namespace {
 #endif
         for (uint32_t i = L; 1 < i; i--) {
           uint32_t offseti = *(hp_d + 32 * 4 + i - 1);
+#if 0
+          offset = processDataElement(key, make_uint4(5 * offset.x, 5 * offset.y, 5 * offset.z, 5 * offset.w),
+                                      *(const uint4*)(hp_d + offseti + 4 * offset.x),
+                                      *(const uint4*)(hp_d + offseti + 4 * offset.y),
+                                      *(const uint4*)(hp_d + offseti + 4 * offset.z),
+                                      *(const uint4*)(hp_d + offseti + 4 * offset.w));
+#else
           offset.x = processDataElement(key.x, 5 * offset.x, *(const uint4*)(hp_d + offseti + 4 * offset.x));
           offset.y = processDataElement(key.y, 5 * offset.y, *(const uint4*)(hp_d + offseti + 4 * offset.y));
           offset.z = processDataElement(key.z, 5 * offset.z, *(const uint4*)(hp_d + offseti + 4 * offset.z));
           offset.w = processDataElement(key.w, 5 * offset.w, *(const uint4*)(hp_d + offseti + 4 * offset.w));
+#endif
         }
         uint32_t offset0 = *(hp_d + 32 * 4);
         uint4 val;
