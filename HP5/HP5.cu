@@ -252,6 +252,38 @@ namespace {
     return offset;
   }
 
+
+  __device__ __forceinline__ uint4 processHistoElement(uint4& key, uint4 offset, const uint4 elementA, const uint4 elementB, const uint4 elementC, const uint4 elementD)
+  {
+    bool doneA = key.x < elementA.x;
+    bool doneB = key.y < elementB.x;
+    bool doneC = key.z < elementC.x;
+    bool doneD = key.w < elementD.x;
+
+    if (!doneA && key.x < elementA.y) { doneA = true; key.x -= elementA.x; offset.x += 1; }
+    if (!doneB && key.y < elementB.y) { doneB = true; key.y -= elementB.x; offset.y += 1; }
+    if (!doneC && key.z < elementC.y) { doneC = true; key.z -= elementC.x; offset.z += 1; }
+    if (!doneD && key.w < elementD.y) { doneD = true; key.w -= elementD.x; offset.w += 1; }
+
+    if (!doneA && key.x < elementA.z) { doneA = true; key.x -= elementA.y; offset.x += 2; }
+    if (!doneB && key.y < elementB.z) { doneB = true; key.y -= elementB.y; offset.y += 2; }
+    if (!doneC && key.z < elementC.z) { doneC = true; key.z -= elementC.y; offset.z += 2; }
+    if (!doneD && key.w < elementD.z) { doneD = true; key.w -= elementD.y; offset.w += 2; }
+
+    if (!doneA && key.x < elementA.w) { doneA = true; key.x -= elementA.z; offset.x += 3; }
+    if (!doneB && key.y < elementB.w) { doneB = true; key.y -= elementB.z; offset.y += 3; }
+    if (!doneC && key.z < elementC.w) { doneC = true; key.z -= elementC.z; offset.z += 3; }
+    if (!doneD && key.w < elementD.w) { doneD = true; key.w -= elementD.z; offset.w += 3; }
+
+    if (!doneA) { key.x -= elementA.w; offset.x += 4; }
+    if (!doneB) { key.y -= elementB.w; offset.y += 4; }
+    if (!doneC) { key.z -= elementC.w; offset.z += 4; }
+    if (!doneD) { key.w -= elementD.w; offset.w += 4; }
+
+    return offset;
+  }
+
+
   __device__ __forceinline__ uint32_t processDataElement(uint32_t& key, uint32_t offset, const uint4 element)
   {
     if (element.x <= key) {
@@ -373,6 +405,22 @@ namespace {
           key.w = min(key.w, N - 1);
         }
 
+#if 1
+        offset = processHistoElement(key, make_uint4(5 * offset.x, 5 * offset.y, 5 * offset.z, 5 * offset.w), T, T, T, T);
+
+        offset = processHistoElement(key, make_uint4(5 * offset.x, 5 * offset.y, 5 * offset.z, 5 * offset.w),
+                                     *(const uint4*)(hp_d + 8 + 4 * offset.x),
+                                     *(const uint4*)(hp_d + 8 + 4 * offset.y),
+                                     *(const uint4*)(hp_d + 8 + 4 * offset.z),
+                                     *(const uint4*)(hp_d + 8 + 4 * offset.w));
+
+        offset = processHistoElement(key, make_uint4(5 * offset.x, 5 * offset.y, 5 * offset.z, 5 * offset.w),
+                                     *(const uint4*)(hp_d + 28 + 4 * offset.x),
+                                     *(const uint4*)(hp_d + 28 + 4 * offset.y),
+                                     *(const uint4*)(hp_d + 28 + 4 * offset.z),
+                                     *(const uint4*)(hp_d + 28 + 4 * offset.w));
+
+#else
         offset.x = processHistoElement(key.x, 5 * offset.x, T);
         offset.y = processHistoElement(key.y, 5 * offset.y, T);
         offset.z = processHistoElement(key.z, 5 * offset.z, T);
@@ -387,7 +435,7 @@ namespace {
         offset.y = processHistoElement(key.y, 5 * offset.y, *(const uint4*)(hp_d + 28 + 4 * offset.y));
         offset.z = processHistoElement(key.z, 5 * offset.z, *(const uint4*)(hp_d + 28 + 4 * offset.z));
         offset.w = processHistoElement(key.w, 5 * offset.w, *(const uint4*)(hp_d + 28 + 4 * offset.w));
-
+#endif
         for (uint32_t i = L; 1 < i; i--) {
           uint32_t offseti = *(hp_d + 32 * 4 + i - 1);
           offset.x = processDataElement(key.x, 5 * offset.x, *(const uint4*)(hp_d + offseti + 4 * offset.x));
