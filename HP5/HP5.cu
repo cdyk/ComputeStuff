@@ -114,7 +114,20 @@ namespace {
   reduceApex(uint4* __restrict__ apex_d,
              uint32_t* sum_d,
              const uint32_t* in_d,
-             uint32_t N)
+             uint32_t N,
+             uint32_t offset0,
+             uint32_t offset1,
+             uint32_t offset2,
+             uint32_t offset3,
+             uint32_t offset4,
+             uint32_t offset5,
+             uint32_t offset6,
+             uint32_t offset7,
+             uint32_t offset8,
+             uint32_t offset9,
+             uint32_t offsetA,
+             uint32_t offsetB,
+             uint32_t offsetC)
   {
     // 0 : sum + 3 padding
     // 1 : 1 uvec4 of level 0.
@@ -127,61 +140,81 @@ namespace {
     if (mask_input) {
       a = a != 0 ? 1 : 0;
     }
-    __shared__ uint32_t sb[125 + 25];
+    volatile __shared__ uint32_t sb[125 + 25];
     sb[threadIdx.x] = a;
 
     // Store 5x5 uint4's at uint4 offset 0 (25x4=100 elements, corresponding to 125 inputs).
     __syncthreads();
-    if (threadIdx.x < 25) {
-      uint32_t e0 = sb[5 * threadIdx.x + 0];
-      uint32_t e1 = sb[5 * threadIdx.x + 1];
-      uint32_t e2 = sb[5 * threadIdx.x + 2];
-      uint32_t e3 = sb[5 * threadIdx.x + 3];
-      uint32_t e4 = sb[5 * threadIdx.x + 4];
-      apex_d[7 + threadIdx.x] = make_uint4(e0,
-                                       e0 + e1,
-                                       e0 + e1 + e2,
-                                       e0 + e1 + e2 + e3);
 
-      sb[125 + threadIdx.x] = e0 + e1 + e2 + e3 + e4;
-    }
+    if (threadIdx.x < 32) {
 
-    // Store 5 uint4's at uint4 offset 25 (5x4=20 elements, corresponding to 25 inputs).
-    __syncthreads();
-    if (threadIdx.x < 5) {
-      uint32_t e0 = sb[125 + 5 * threadIdx.x + 0];
-      uint32_t e1 = sb[125 + 5 * threadIdx.x + 1];
-      uint32_t e2 = sb[125 + 5 * threadIdx.x + 2];
-      uint32_t e3 = sb[125 + 5 * threadIdx.x + 3];
-      uint32_t e4 = sb[125 + 5 * threadIdx.x + 4];
-      apex_d[2 + threadIdx.x] = make_uint4(e0,
-                                            e0 + e1,
-                                            e0 + e1 + e2,
-                                            e0 + e1 + e2 + e3);
+      if (threadIdx.x < 25) {
+        uint32_t e0 = sb[5 * threadIdx.x + 0];
+        uint32_t e1 = sb[5 * threadIdx.x + 1];
+        uint32_t e2 = sb[5 * threadIdx.x + 2];
+        uint32_t e3 = sb[5 * threadIdx.x + 3];
+        uint32_t e4 = sb[5 * threadIdx.x + 4];
+        apex_d[7 + threadIdx.x] = make_uint4(e0,
+                                             e0 + e1,
+                                             e0 + e1 + e2,
+                                             e0 + e1 + e2 + e3);
 
-      sb[threadIdx.x] = e0 + e1 + e2 + e3 + e4;
-    }
+        sb[125 + threadIdx.x] = e0 + e1 + e2 + e3 + e4;
+      }
 
-    // Store 1 uint4 at uint4 offset 30 (1x4=4 elements, corresponding to 5 inputs)
-    // Store total at uint4 offset 31
-    __syncthreads();
-    if (threadIdx.x < 1) {
-      uint32_t e0 = sb[0];
-      uint32_t e1 = sb[1];
-      uint32_t e2 = sb[2];
-      uint32_t e3 = sb[3];
-      uint32_t e4 = sb[4];
-      apex_d[1 + threadIdx.x] = make_uint4(e0,
-                                            e0 + e1,
-                                            e0 + e1 + e2,
-                                            e0 + e1 + e2 + e3);
-      uint32_t s = e0 + e1 + e2 + e3 + e4;
-      *reinterpret_cast<uint32_t*>(apex_d) = s;
-      if (write_sum) {
-        *sum_d = s;
+      // Store 5 uint4's at uint4 offset 25 (5x4=20 elements, corresponding to 25 inputs).
+      //__syncthreads();
+      if (threadIdx.x < 5) {
+        uint32_t e0 = sb[125 + 5 * threadIdx.x + 0];
+        uint32_t e1 = sb[125 + 5 * threadIdx.x + 1];
+        uint32_t e2 = sb[125 + 5 * threadIdx.x + 2];
+        uint32_t e3 = sb[125 + 5 * threadIdx.x + 3];
+        uint32_t e4 = sb[125 + 5 * threadIdx.x + 4];
+        apex_d[2 + threadIdx.x] = make_uint4(e0,
+                                             e0 + e1,
+                                             e0 + e1 + e2,
+                                             e0 + e1 + e2 + e3);
+
+        sb[threadIdx.x] = e0 + e1 + e2 + e3 + e4;
+      }
+
+      // Store 1 uint4 at uint4 offset 30 (1x4=4 elements, corresponding to 5 inputs)
+      // Store total at uint4 offset 31
+      //__syncthreads();
+      if (threadIdx.x < 1) {
+        uint32_t e0 = sb[0];
+        uint32_t e1 = sb[1];
+        uint32_t e2 = sb[2];
+        uint32_t e3 = sb[3];
+        uint32_t e4 = sb[4];
+        apex_d[1 + threadIdx.x] = make_uint4(e0,
+                                             e0 + e1,
+                                             e0 + e1 + e2,
+                                             e0 + e1 + e2 + e3);
+        uint32_t s = e0 + e1 + e2 + e3 + e4;
+        *reinterpret_cast<uint32_t*>(apex_d) = s;
+        if (write_sum) {
+          *sum_d = s;
+        }
       }
     }
+    else if (threadIdx.x == 32) {
+      uint32_t * t = (uint32_t*)(apex_d + 32);
 
+      if (offset0 != 0) t[0] = offset0;
+      if (offset1 != 0) t[1] = offset1;
+      if (offset2 != 0) t[2] = offset2;
+      if (offset3 != 0) t[3] = offset3;
+      if (offset4 != 0) t[4] = offset4;
+      if (offset5 != 0) t[5] = offset5;
+      if (offset6 != 0) t[6] = offset6;
+      if (offset7 != 0) t[7] = offset7;
+      if (offset8 != 0) t[8] = offset8;
+      if (offset9 != 0) t[9] = offset9;
+      if (offsetA != 0) t[10] = offsetA;
+      if (offsetB != 0) t[11] = offsetB;
+      if (offsetC != 0) t[12] = offsetC;
+    }
   }
 
   /*template<uint32_t L>
@@ -293,30 +326,41 @@ namespace {
     uint32_t dataB;
   };
 
+  __device__ __forceinline__ uint32_t _ldu(const uint32_t *ptr)
+  {
+    uint32_t rv;
+    asm ("ldu.global.u32 %0, [%1];" : "=r"(rv) :
+#if defined(__LP64__) || defined(_WIN64)
+                  "l"(ptr)
+#else
+                  "r"(ptr)
+#endif
+    );
+    return rv;
+  }
+
+  __device__ __forceinline__ uint4 _ldu(const uint4 *ptr)
+  {
+    uint4 rv;
+    asm("ldu.global.v4.u32 {%0,%1,%2,%3}, [%4];" : "=r"(rv.x), "=r"(rv.y), "=r"(rv.z), "=r"(rv.w) :
+#if defined(__LP64__) || defined(_WIN64)
+        "l"(ptr)
+#else
+        "r"(ptr)
+#endif
+    );
+    return rv;
+  }
+
+
   template<uint32_t L>
   __global__
   __launch_bounds__(128)
   void extract(uint32_t* __restrict__ out_d,
-               const uint32_t* __restrict__ hp_d,
-               const OffsetBlob offsetBlob)
+               const uint32_t* __restrict__ hp_d)
   {
-
-    __shared__ uint32_t offsets[12];
-    if (0 < L) offsets[0] = offsetBlob.data0;
-    if (1 < L) offsets[1] = offsetBlob.data1;
-    if (2 < L) offsets[2] = offsetBlob.data2;
-    if (3 < L) offsets[3] = offsetBlob.data3;
-    if (4 < L) offsets[4] = offsetBlob.data4;
-    if (5 < L) offsets[5] = offsetBlob.data5;
-    if (6 < L) offsets[6] = offsetBlob.data6;
-    if (7 < L) offsets[7] = offsetBlob.data7;
-    if (8 < L) offsets[8] = offsetBlob.data8;
-    if (9 < L) offsets[9] = offsetBlob.data9;
-    if (10 < L) offsets[10] = offsetBlob.dataA;
-    if (11 < L) offsets[11] = offsetBlob.dataB;
-
     uint32_t N = hp_d[0];
-    uint4 T = *(const uint4*)(hp_d + 4);
+    uint4 T = *((const uint4*)(hp_d + 4));
 
     for (uint32_t k = blockDim.x * blockIdx.x; k < N; k += gridDim.x * blockDim.x) {
       const uint32_t index = k + threadIdx.x;
@@ -327,10 +371,12 @@ namespace {
         offset = processHistoElement(key, 5 * offset, *(const uint4*)(hp_d + 8 + 4 * offset));
         offset = processHistoElement(key, 5 * offset, *(const uint4*)(hp_d + 28 + 4 * offset));
         for (uint32_t i = L; 1 < i; i--) {
-          offset = processDataElement(key, 5 * offset, *(const uint4*)(hp_d + offsets[i - 1] + 4 * offset));
+          uint32_t offseti = *(hp_d + 32 * 4 + i - 1);
+          offset = processDataElement(key, 5 * offset, *(const uint4*)(hp_d + offseti + 4 * offset));
         }
         uint32_t * dst = out_d + index;
-        uint32_t val = processMaskElement(key, 32 * offset, hp_d[offsets[0] + offset]);
+        uint32_t offset0 = *(hp_d + 32 * 4);
+        uint32_t val = processMaskElement(key, 32 * offset, hp_d[offset0 + offset]);
 #if 0
         *dst = val;
 #else
@@ -345,16 +391,13 @@ namespace {
   template<uint32_t L>
   void runExtract(uint32_t* out_d, const std::vector<uint32_t>& offsets, const uint32_t* hp_d, uint32_t N, cudaStream_t stream)
   {
-    OffsetBlob offsetBlob;
-    std::memcpy(&offsetBlob.data0, offsets.data(), sizeof(uint32_t)*std::min(uint32_t(12), L));
-
     int minGridSize = 0;
     int blockSize = 0;
     auto rv = cudaOccupancyMaxPotentialBlockSize(&minGridSize, &blockSize, extract<L>);
     //assert(rv == cudaSuccess);
 
     auto blocks = std::min(minGridSize, int((N + blockSize - 1) / blockSize));
-    ::extract<L><<<blocks, blockSize, 0, stream>>>(out_d, hp_d, offsetBlob);
+    ::extract<L><<<blocks, blockSize, 0, stream>>>(out_d, hp_d);
   }
 
   void scratchLayout(std::vector<uint32_t>& levels, std::vector<uint32_t>& offsets, uint32_t N)
@@ -371,8 +414,10 @@ namespace {
     offsets.resize(levels.size() + 4);
 
     uint32_t o = 0;
-    offsets[levels.size()] = o;  // Apex
-    o += 32 * 4;
+    offsets[levels.size()] = o;                 // Apex
+    o += 32 * 4;                                // Size of apex
+    o += static_cast<uint32_t>(levels.size());  // Space for level offsets
+    o = (o + 3) & ~3;                           // Align to uvec4
 
     for (int i = static_cast<int>(levels.size()) - 1; 0 < i; i--) {
       offsets[i] = o; // HP level i
@@ -459,7 +504,20 @@ void ComputeStuff::HP5::compact(uint32_t* out_d,
     ::reduceApex<false, true><<<1, 128, 0, stream>>>(reinterpret_cast<uint4*>(scratch_d),
                                                      sum_d,
                                                      scratch_d + offsets[L + 1 + (sb ? 0 : 1)],
-                                                     levels[L - 1]);
+                                                     levels[L - 1],
+                                                     0 < L ? offsets[0] : 0,
+                                                     1 < L ? offsets[1] : 0,
+                                                     2 < L ? offsets[2] : 0,
+                                                     3 < L ? offsets[3] : 0,
+                                                     4 < L ? offsets[4] : 0,
+                                                     5 < L ? offsets[5] : 0,
+                                                     6 < L ? offsets[6] : 0,
+                                                     7 < L ? offsets[7] : 0,
+                                                     8 < L ? offsets[8] : 0,
+                                                     9 < L ? offsets[9] : 0,
+                                                     10 < L ? offsets[10] : 0,
+                                                     11 < L ? offsets[11] : 0,
+                                                     12 < L ? offsets[12] : 0);
   }
 
 
