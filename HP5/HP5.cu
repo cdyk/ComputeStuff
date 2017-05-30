@@ -362,26 +362,64 @@ namespace {
     uint32_t N = hp_d[0];
     uint4 T = *((const uint4*)(hp_d + 4));
 
-    for (uint32_t k = blockDim.x * blockIdx.x; k < N; k += gridDim.x * blockDim.x) {
-      const uint32_t index = k + threadIdx.x;
+    for (uint32_t k = 4 * blockDim.x * blockIdx.x; k < N; k += 4 * gridDim.x * blockDim.x) {
+      uint32_t index = k + 4 * threadIdx.x;
       if (index < N) {
-        uint32_t offset = 0;
-        uint32_t key = index;
-        offset = processHistoElement(key, 5 * offset, T);
-        offset = processHistoElement(key, 5 * offset, *(const uint4*)(hp_d + 8 + 4 * offset));
-        offset = processHistoElement(key, 5 * offset, *(const uint4*)(hp_d + 28 + 4 * offset));
+        uint4 offset = make_uint4(0, 0, 0, 0);
+        uint4 key = make_uint4(index, index + 1, index + 2, index + 3);
+        if (N <= key.w) {
+          key.y = min(key.y, N - 1);
+          key.z = min(key.z, N - 1);
+          key.w = min(key.w, N - 1);
+        }
+
+        offset.x = processHistoElement(key.x, 5 * offset.x, T);
+        offset.y = processHistoElement(key.y, 5 * offset.y, T);
+        offset.z = processHistoElement(key.z, 5 * offset.z, T);
+        offset.w = processHistoElement(key.w, 5 * offset.w, T);
+
+        offset.x = processHistoElement(key.x, 5 * offset.x, *(const uint4*)(hp_d + 8 + 4 * offset.x));
+        offset.y = processHistoElement(key.y, 5 * offset.y, *(const uint4*)(hp_d + 8 + 4 * offset.y));
+        offset.z = processHistoElement(key.z, 5 * offset.z, *(const uint4*)(hp_d + 8 + 4 * offset.z));
+        offset.w = processHistoElement(key.w, 5 * offset.w, *(const uint4*)(hp_d + 8 + 4 * offset.w));
+
+        offset.x = processHistoElement(key.x, 5 * offset.x, *(const uint4*)(hp_d + 28 + 4 * offset.x));
+        offset.y = processHistoElement(key.y, 5 * offset.y, *(const uint4*)(hp_d + 28 + 4 * offset.y));
+        offset.z = processHistoElement(key.z, 5 * offset.z, *(const uint4*)(hp_d + 28 + 4 * offset.z));
+        offset.w = processHistoElement(key.w, 5 * offset.w, *(const uint4*)(hp_d + 28 + 4 * offset.w));
+
         for (uint32_t i = L; 1 < i; i--) {
           uint32_t offseti = *(hp_d + 32 * 4 + i - 1);
-          offset = processDataElement(key, 5 * offset, *(const uint4*)(hp_d + offseti + 4 * offset));
+          offset.x = processDataElement(key.x, 5 * offset.x, *(const uint4*)(hp_d + offseti + 4 * offset.x));
+          offset.y = processDataElement(key.y, 5 * offset.y, *(const uint4*)(hp_d + offseti + 4 * offset.y));
+          offset.z = processDataElement(key.z, 5 * offset.z, *(const uint4*)(hp_d + offseti + 4 * offset.z));
+          offset.w = processDataElement(key.w, 5 * offset.w, *(const uint4*)(hp_d + offseti + 4 * offset.w));
         }
-        uint32_t * dst = out_d + index;
         uint32_t offset0 = *(hp_d + 32 * 4);
-        uint32_t val = processMaskElement(key, 32 * offset, hp_d[offset0 + offset]);
-#if 0
-        *dst = val;
-#else
-        asm("st.global.cs.u32 [%0], %1;" ::  "l"(dst), "r"(val));
-#endif
+        uint4 val;
+        val.x = processMaskElement(key.x, 32 * offset.x, hp_d[offset0 + offset.x]);
+        val.y = processMaskElement(key.y, 32 * offset.y, hp_d[offset0 + offset.y]);
+        val.z = processMaskElement(key.z, 32 * offset.z, hp_d[offset0 + offset.z]);
+        val.w = processMaskElement(key.w, 32 * offset.w, hp_d[offset0 + offset.w]);
+
+        if (index + 3 < N) {
+          *(uint4*)(out_d + index) = val;
+        }
+        else {
+          out_d[index] = val.x;
+          if (index + 1 < N) {
+            out_d[index + 1] = val.y;
+            if (index + 2 < N) {
+              out_d[index + 2] = val.z;
+            }
+          }
+        }
+        //uint32_t * dst = out_d + index;
+//#if 0
+//        *dst = val;
+//#else
+//        asm("st.global.cs.u32 [%0], %1;" ::  "l"(dst), "r"(val));
+//#endif
 
       }
     }
@@ -396,7 +434,7 @@ namespace {
     auto rv = cudaOccupancyMaxPotentialBlockSize(&minGridSize, &blockSize, extract<L>);
     //assert(rv == cudaSuccess);
 
-    auto blocks = std::min(minGridSize, int((N + blockSize - 1) / blockSize));
+    auto blocks = std::min(minGridSize, int((N + 4 * blockSize - 1) / (4 * blockSize)));
     ::extract<L><<<blocks, blockSize, 0, stream>>>(out_d, hp_d);
   }
 
