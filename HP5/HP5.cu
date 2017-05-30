@@ -329,7 +329,14 @@ namespace {
         for (uint32_t i = L; 1 < i; i--) {
           offset = processDataElement(key, 5 * offset, *(const uint4*)(hp_d + offsets[i - 1] + 4 * offset));
         }
-        out_d[index] = processMaskElement(key, 32 * offset, hp_d[offsets[0] + offset]);
+        uint32_t * dst = out_d + index;
+        uint32_t val = processMaskElement(key, 32 * offset, hp_d[offsets[0] + offset]);
+#if 0
+        *dst = val;
+#else
+        asm("st.global.cs.u32 [%0], %1;" ::  "l"(dst), "r"(val));
+#endif
+
       }
     }
   }
@@ -344,7 +351,7 @@ namespace {
     int minGridSize = 0;
     int blockSize = 0;
     auto rv = cudaOccupancyMaxPotentialBlockSize(&minGridSize, &blockSize, extract<L>);
-    assert(rv == cudaSuccess);
+    //assert(rv == cudaSuccess);
 
     auto blocks = std::min(minGridSize, int((N + blockSize - 1) / blockSize));
     ::extract<L><<<blocks, blockSize, 0, stream>>>(out_d, hp_d, offsetBlob);
