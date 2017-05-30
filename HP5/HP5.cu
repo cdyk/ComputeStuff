@@ -10,9 +10,6 @@
 #define HP5_WARP_COUNT 5
 #define HP5_WARP_SIZE 32
 
-#define HP5_EXTRACT_BLOCKSIZE 128
-#define HP5_EXTRACT_BLOCKS (22*16)
-
 namespace {
 
 
@@ -321,7 +318,7 @@ namespace {
     uint32_t N = hp_d[0];
     uint4 T = *(const uint4*)(hp_d + 4);
 
-    for (uint32_t k = HP5_EXTRACT_BLOCKSIZE * blockIdx.x; k < N; k += HP5_EXTRACT_BLOCKS * HP5_EXTRACT_BLOCKSIZE) {
+    for (uint32_t k = blockDim.x * blockIdx.x; k < N; k += gridDim.x * blockDim.x) {
       const uint32_t index = k + threadIdx.x;
       if (index < N) {
         uint32_t offset = 0;
@@ -335,6 +332,22 @@ namespace {
         out_d[index] = processMaskElement(key, 32 * offset, hp_d[offsets[0] + offset]);
       }
     }
+  }
+
+
+  template<uint32_t L>
+  void runExtract(uint32_t* out_d, const std::vector<uint32_t>& offsets, const uint32_t* hp_d, uint32_t N, cudaStream_t stream)
+  {
+    OffsetBlob offsetBlob;
+    std::memcpy(&offsetBlob.data0, offsets.data(), sizeof(uint32_t)*std::min(uint32_t(12), L));
+
+    int minGridSize = 0;
+    int blockSize = 0;
+    auto rv = cudaOccupancyMaxPotentialBlockSize(&minGridSize, &blockSize, extract<L>);
+    assert(rv == cudaSuccess);
+
+    auto blocks = std::min(minGridSize, int((N + blockSize - 1) / blockSize));
+    ::extract<L><<<blocks, blockSize, 0, stream>>>(out_d, hp_d, offsetBlob);
   }
 
   void scratchLayout(std::vector<uint32_t>& levels, std::vector<uint32_t>& offsets, uint32_t N)
@@ -371,6 +384,9 @@ namespace {
 
     offsets[levels.size() + 3] = o; // Final size
   }
+
+  
+
 
 }
 
@@ -441,27 +457,26 @@ void ComputeStuff::HP5::compact(uint32_t* out_d,
 
 
 
-  OffsetBlob offsetBlob;
-  std::memcpy(&offsetBlob.data0, offsets.data(), sizeof(uint32_t)*std::min(size_t(12), L));
+ 
 
   // No readback, no dynamic parallelism approach: Create enough blocks s.t. all multiprocessors have enough warps,
   // but let problem size beyond this be handled by looping. 
 
-  auto B = std::min(uint32_t(HP5_EXTRACT_BLOCKS), (N + HP5_EXTRACT_BLOCKSIZE - 1) / HP5_EXTRACT_BLOCKSIZE);
   switch (L)
   {
-  case 0: ::extract<0><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, scratch_d, offsetBlob); break;
-  case 1: ::extract<1><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, scratch_d, offsetBlob); break;
-  case 2: ::extract<2><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, scratch_d, offsetBlob); break;
-  case 3: ::extract<3><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, scratch_d, offsetBlob); break;
-  case 4: ::extract<4><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, scratch_d, offsetBlob); break;
-  case 5: ::extract<5><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, scratch_d, offsetBlob); break;
-  case 6: ::extract<6><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, scratch_d, offsetBlob); break;
-  case 7: ::extract<7><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, scratch_d, offsetBlob); break;
-  case 8: ::extract<8><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, scratch_d, offsetBlob); break;
-  case 9: ::extract<9><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, scratch_d, offsetBlob); break;
-  case 10: ::extract<10><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, scratch_d, offsetBlob); break;
-  case 11: ::extract<11><<<B, HP5_EXTRACT_BLOCKSIZE, 0, stream>>>(out_d, scratch_d, offsetBlob); break;
+  case 0: ::runExtract<0>(out_d, offsets, scratch_d, N, stream); break;
+  case 1: ::runExtract<1>(out_d, offsets, scratch_d, N, stream); break;
+  case 2: ::runExtract<2>(out_d, offsets, scratch_d, N, stream); break;
+  case 3: ::runExtract<3>(out_d, offsets, scratch_d, N, stream); break;
+  case 4: ::runExtract<4>(out_d, offsets, scratch_d, N, stream); break;
+  case 5: ::runExtract<5>(out_d, offsets, scratch_d, N, stream); break;
+  case 6: ::runExtract<6>(out_d, offsets, scratch_d, N, stream); break;
+  case 7: ::runExtract<7>(out_d, offsets, scratch_d, N, stream); break;
+  case 8: ::runExtract<8>(out_d, offsets, scratch_d, N, stream); break;
+  case 9: ::runExtract<9>(out_d, offsets, scratch_d, N, stream); break;
+  case 10: ::runExtract<10>(out_d, offsets, scratch_d, N, stream); break;
+  case 11: ::runExtract<11>(out_d, offsets, scratch_d, N, stream); break;
+  case 12: ::runExtract<12>(out_d, offsets, scratch_d, N, stream); break;
   default:
     abort();
     break;
