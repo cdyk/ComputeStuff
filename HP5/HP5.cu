@@ -482,7 +482,7 @@ void ComputeStuff::HP5::compact(uint32_t* out_d,
     break;
   }
 
-#if 1
+#if 0
   cudaStreamSynchronize(stream);
   auto error = cudaGetLastError();
   if (error != cudaSuccess) {
