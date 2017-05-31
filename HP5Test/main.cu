@@ -46,7 +46,7 @@ void buildCompactProblemWorstCase(std::vector<uint32_t>& out, uint32_t& sum, std
   in.resize(N);
   out.resize(N);
   for (uint32_t i = 0; i < N; i++) {
-    in[i] = m == 1 ? 1 : (i % m);
+    in[i] = m == 1 ? 1 : ((i % m) == 0);
     if (in[i]) {
       out[sum++] = i;
     }
