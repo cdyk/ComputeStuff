@@ -11,6 +11,10 @@ MIT-licensed stand-alone CUDA utility functions.
 * [Prefix sum / Scan](#prefix-sum-Scan)
   * [Performance](#performance)
 * [5:1 HistoPyramids](#histoPyramids)
+  * [Performance](#performance-1)
+* [Credits](#credits)
+* [License](#license)
+
 
 ## Introduction
 
@@ -18,7 +22,7 @@ The intent is to make various useful functions of mine available for the public 
 
 The functions are designed to have a minimum of dependencies, so integration is mostly just adding the relevant files into your project.
 
-I've started with variants of scan, and the plan is to continue with HistoPyramid algorithms and Marching Cubes.
+I've started with variants of scan and the 5-to-1 HistoPyramid, and will continue with HistoPyramid variations and Marching Cubes.
 
 ### How to use
 
@@ -132,10 +136,72 @@ The 5-to-1 HistoPyramid is a variation of the traditional 4-to-1 HistoPyramid (o
 
 The details are explained in [GPU Accelerated Data Expansion Marching Cubes Algorithm](http://on-demand.gputechconf.com/gtc/2010/presentations/S12020-GPU-Accelerated-Data-Expansion-Marching-Cubes-Algorithm.pdf) from GTC 2010.
 
-The current implementation should be *correct*, but *is not optimized at all* (i.e., no multiple-level reductions, no constmem/texture sampler use, no dynamic parallelism), so it is actually slower than the scan-based compact in its current form. However, this is work in progress, so performance will improve.
 
 Implementation of
 
 * **compact:** Extract indices where the corresponding input has a non-zero value (a.k.a. subset, stream-compact and copy-if), and write the number of entries in the output somewhere in device memory.
 
 Please consult [HP5/HP5.h](HP5/HP5.h) for details on the API entry points.
+
+### Performance
+
+The implementation starts to become decent. The numbers below is a comparsion to ComputeStuff's own scan implementation, which is faster than thrust (see [Scan performance](#performance)), and was run on an GTX 980 Ti.
+
+Ratio is the time HP5 uses compared to Scan (lower is better for HP5's case). The test runs compact on N elements where "% selected" of the elements are marked for selection. In the min-scatter scenario, all selected elements are in the start of the buffer, which is the best-case for HP cache utilization, while max-scatter evenly spaces the selected element out, which is the worst-case for HP cache utilization. Please consult [HP5Test/main.cu](HP5Test/main.cu) for further details.
+
+
+
+| N    | % selected| min-scatter scan | min-scatter hp5    |min-scatter ratio| max-scatter scan | max-scatter hp5    | max-scatter ratio|
+|------|-------|---------|----------|-------|---------|----------|------|
+| 1000 | 3.13% | 0.0197ms | 0.0214ms | 1.09 | 0.0192ms | 0.0213ms | 1.11 |
+| 3333 | 3.13% | 0.0195ms | 0.0199ms | 1.02 | 0.0199ms | 0.0215ms | 1.08 |
+| 11110 | 3.13% | 0.02ms | 0.0391ms | 1.95 | 0.0206ms | 0.0315ms | 1.53 |
+| 37033 | 3.13% | 0.0205ms | 0.0375ms | 1.83 | 0.0207ms | 0.0377ms | 1.82 |
+| 123443 | 3.13% | 0.0266ms | 0.0487ms | 1.83 | 0.0266ms | 0.0442ms | 1.66 |
+| 411476 | 3.13% | 0.0451ms | 0.0442ms | 0.98 | 0.0403ms | 0.0441ms | 1.09 |
+| 1371586 | 3.13% | 0.0831ms | 0.0763ms | 0.918 | 0.0829ms | 0.0763ms | 0.92 |
+| 4571953 | 3.13% | 0.187ms | 0.157ms | 0.841 | 0.185ms | 0.159ms | 0.858 |
+| 15239843 | 3.13% | 0.535ms | 0.398ms | 0.744 | 0.527ms | 0.397ms | 0.754 |
+| 50799476 | 3.13% | 1.69ms | 1.14ms | 0.675 | 1.63ms | 1.14ms | 0.703 |
+| 169331586 | 3.13% | 5.48ms | 3.62ms | 0.661 | 5.39ms | 3.74ms | 0.694 |
+| 1000 | 1.56% | 0.0191ms | 0.0226ms | 1.18 | 0.0208ms | 0.0231ms | 1.11 |
+| 3333 | 1.56% | 0.0199ms | 0.0213ms | 1.07 | 0.0208ms | 0.022ms | 1.06 |
+| 11110 | 1.56% | 0.0199ms | 0.0308ms | 1.54 | 0.0202ms | 0.0316ms | 1.57 |
+| 37033 | 1.56% | 0.0204ms | 0.0422ms | 2.07 | 0.0215ms | 0.0394ms | 1.83 |
+| 123443 | 1.56% | 0.0271ms | 0.0443ms | 1.63 | 0.0269ms | 0.0455ms | 1.69 |
+| 411476 | 1.56% | 0.0471ms | 0.0457ms | 0.971 | 0.0396ms | 0.044ms | 1.11 |
+| 1371586 | 1.56% | 0.0827ms | 0.0749ms | 0.906 | 0.0824ms | 0.0746ms | 0.906 |
+| 4571953 | 1.56% | 0.186ms | 0.148ms | 0.795 | 0.187ms | 0.152ms | 0.811 |
+| 15239843 | 1.56% | 0.528ms | 0.373ms | 0.708 | 0.526ms | 0.379ms | 0.722 |
+| 50799476 | 1.56% | 1.67ms | 1.09ms | 0.654 | 1.67ms | 1.12ms | 0.668 |
+| 169331586 | 1.56% | 5.44ms | 3.39ms | 0.622 | 5.41ms | 3.46ms | 0.64 |
+| 1000 | 0.781% | 0.0635ms | 0.0694ms | 1.09 | 0.0628ms | 0.0668ms | 1.06 |
+| 3333 | 0.781% | 0.0193ms | 0.0201ms | 1.04 | 0.0187ms | 0.02ms | 1.07 |
+| 11110 | 0.781% | 0.0194ms | 0.0273ms | 1.41 | 0.0196ms | 0.0281ms | 1.43 |
+| 37033 | 0.781% | 0.0185ms | 0.0367ms | 1.98 | 0.0185ms | 0.0333ms | 1.8 |
+| 123443 | 0.781% | 0.0238ms | 0.039ms | 1.63 | 0.0271ms | 0.0392ms | 1.45 |
+| 411476 | 0.781% | 0.0363ms | 0.0398ms | 1.1 | 0.0357ms | 0.0393ms | 1.1 |
+| 1371586 | 0.781% | 0.0821ms | 0.232ms | 2.83 | 0.0768ms | 0.0682ms | 0.889 |
+| 4571953 | 0.781% | 0.18ms | 0.135ms | 0.752 | 0.178ms | 0.139ms | 0.78 |
+| 15239843 | 0.781% | 0.523ms | 0.358ms | 0.684 | 0.526ms | 0.359ms | 0.683 |
+| 50799476 | 0.781% | 1.66ms | 1.04ms | 0.627 | 1.66ms | 1.05ms | 0.633 |
+| 169331586 | 0.781% | 5.42ms | 3.25ms | 0.6 | 5.39ms | 3.34ms | 0.62 |
+| 1000 | 0.391% | 0.0203ms | 0.0205ms | 1.01 | 0.0198ms | 0.0188ms | 0.947 |
+| 3333 | 0.391% | 0.0202ms | 0.0194ms | 0.961 | 0.0209ms | 0.0204ms | 0.975 |
+| 11110 | 0.391% | 0.0193ms | 0.0276ms | 1.43 | 0.0189ms | 0.0381ms | 2.02 |
+| 37033 | 0.391% | 0.0183ms | 0.0339ms | 1.85 | 0.0194ms | 0.0339ms | 1.74 |
+| 123443 | 0.391% | 0.0237ms | 0.0388ms | 1.64 | 0.0244ms | 0.0404ms | 1.66 |
+| 411476 | 0.391% | 0.0373ms | 0.0398ms | 1.07 | 0.0379ms | 0.044ms | 1.16 |
+| 1371586 | 0.391% | 0.078ms | 0.0688ms | 0.881 | 0.0776ms | 0.0681ms | 0.878 |
+| 4571953 | 0.391% | 0.179ms | 0.134ms | 0.749 | 0.176ms | 0.137ms | 0.783 |
+| 15239843 | 0.391% | 0.516ms | 0.335ms | 0.65 | 0.506ms | 0.347ms | 0.686 |
+| 50799476 | 0.391% | 1.66ms | 1.01ms | 0.61 | 1.63ms | 1.04ms | 0.639 |
+| 169331586 | 0.391% | 5.41ms | 3.19ms | 0.589 | 5.3ms | 3.3ms | 0.623 |
+
+## Credits
+
+The ComputeStuff implementation was initially written and is maintained by Christopher Dyken, with contributions from Gernot Ziegler.
+
+## License
+
+ComputeStuff is licensed under the MIT license, please see [LICENSE](LICENSE) for more information.
