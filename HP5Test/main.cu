@@ -12,6 +12,10 @@
 
 namespace {
 
+  const uint32_t Npre = 10;
+  const uint32_t Nrun = 50;
+
+
   void logFailure(cudaError_t error, const char *file, int line)
   {
     std::cerr << file << '@' << line << ": CUDA error: " << cudaGetErrorName(error) << std::endl;
@@ -103,11 +107,11 @@ void runCompactTest(uint32_t N, uint32_t m)
   buildCompactProblemBestCase(out, sum, in, N, m);
   assertSuccess(cudaMemcpy(in_d, in.data(), sizeof(uint32_t)*N, cudaMemcpyHostToDevice));
   *sum_h = ~0u;
-  for (uint32_t i = 0; i < 10; i++) {
+  for (uint32_t i = 0; i < Npre; i++) {
     ComputeStuff::Scan::compact(out_d, sum_d, scan_scratch_d, in_d, N, stream);
   }
   cudaEventRecord(startA, stream);
-  for (uint32_t i = 0; i < 50; i++) {
+  for (uint32_t i = 0; i < Nrun; i++) {
     ComputeStuff::Scan::compact(out_d, sum_d, scan_scratch_d, in_d, N, stream);
   }
   cudaEventRecord(stopA, stream);
@@ -119,11 +123,11 @@ void runCompactTest(uint32_t N, uint32_t m)
 
   *sum_h = ~0u;
   cudaMemset(out_d, ~0, sizeof(uint32_t)*N);
-  for (uint32_t i = 0; i < 10; i++) {
+  for (uint32_t i = 0; i < Npre; i++) {
     ComputeStuff::HP5::compact(out_d, sum_d, hp5_scratch_d, in_d, N, stream);
   }
   cudaEventRecord(startB, stream);
-  for (uint32_t i = 0; i < 50; i++) {
+  for (uint32_t i = 0; i < Nrun; i++) {
     ComputeStuff::HP5::compact(out_d, sum_d, hp5_scratch_d, in_d, N, stream);
   }
   cudaEventRecord(stopB, stream);
@@ -137,11 +141,11 @@ void runCompactTest(uint32_t N, uint32_t m)
   buildCompactProblemWorstCase(out, sum, in, N, m);
   assertSuccess(cudaMemcpy(in_d, in.data(), sizeof(uint32_t)*N, cudaMemcpyHostToDevice));
   *sum_h = ~0u;
-  for (uint32_t i = 0; i < 10; i++) { // Warm-up
+  for (uint32_t i = 0; i < Npre; i++) { // Warm-up
     ComputeStuff::Scan::compact(out_d, sum_d, scan_scratch_d, in_d, N, stream);
   }
   cudaEventRecord(startC, stream);
-  for (uint32_t i = 0; i < 50; i++) { // Perf run
+  for (uint32_t i = 0; i < Nrun; i++) { // Perf run
     ComputeStuff::Scan::compact(out_d, sum_d, scan_scratch_d, in_d, N, stream);
   }
   cudaEventRecord(stopC, stream);
@@ -152,11 +156,11 @@ void runCompactTest(uint32_t N, uint32_t m)
   assertMatching(out_h.data(), out.data(), sum);
 
   *sum_h = ~0u;
-  for (uint32_t i = 0; i < 10; i++) { // Warm-up
+  for (uint32_t i = 0; i < Npre; i++) { // Warm-up
     ComputeStuff::HP5::compact(out_d, sum_d, hp5_scratch_d, in_d, N, stream);
   }
   cudaEventRecord(startD, stream);
-  for (uint32_t i = 0; i < 50; i++) { // Perf run
+  for (uint32_t i = 0; i < Nrun; i++) { // Perf run
     ComputeStuff::HP5::compact(out_d, sum_d, hp5_scratch_d, in_d, N, stream);
   }
   cudaEventRecord(stopD, stream);
@@ -176,11 +180,11 @@ void runCompactTest(uint32_t N, uint32_t m)
   std::cerr << std::setprecision(3)
     << "| " << N << " | "
     << (int)(100/m) << "% | "
-    << (elapsedA / 50.0) << "ms | "
-    << (elapsedB / 50.0) << "ms | "
+    << (elapsedA / Nrun) << "ms | "
+    << (elapsedB / Nrun) << "ms | "
     << (elapsedB / elapsedA) << " | "
-    << (elapsedC / 50.0) << "ms | "
-    << (elapsedD / 50.0) << "ms | "
+    << (elapsedC / Nrun) << "ms | "
+    << (elapsedD / Nrun) << "ms | "
     << (elapsedD / elapsedC) << " | " << std::endl;
 
   assertSuccess(cudaEventDestroy(startA));
