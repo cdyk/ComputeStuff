@@ -409,6 +409,27 @@ namespace {
     return rv;
   }
 
+  __forceinline__ __device__ void load4(uint4& dataA,
+                                        uint4& dataB,
+                                        uint4& dataC,
+                                        uint4& dataD,
+                                        const uint32_t* __restrict__ hp_d,
+                                        const uint32_t offseti,
+                                        const uint4 offset)
+  {
+#if 1
+    dataA = *(const uint4*)(hp_d + offseti + 4 * offset.x);
+    dataB = offset.x != offset.y ? *(const uint4*)(hp_d + offseti + 4 * offset.y) : dataA;
+    dataC = offset.y != offset.z ? *(const uint4*)(hp_d + offseti + 4 * offset.z) : dataB;
+    dataD = offset.z != offset.w ? *(const uint4*)(hp_d + offseti + 4 * offset.w) : dataC;
+#else
+    dataA = *(const uint4*)(hp_d + offseti + 4 * offset.x);
+    dataB = *(const uint4*)(hp_d + offseti + 4 * offset.y);
+    dataC = *(const uint4*)(hp_d + offseti + 4 * offset.z);
+    dataD = *(const uint4*)(hp_d + offseti + 4 * offset.w);
+#endif
+  }
+
 
   template<uint32_t L>
   __global__
@@ -471,6 +492,7 @@ namespace {
 #endif
         for (uint32_t i = L; 1 < i; i--) {
           uint32_t offseti = *(sh + 32 * 4 + i - 1);
+
 #if 0
           offset = processDataElement(key, make_uint4(5 * offset.x, 5 * offset.y, 5 * offset.z, 5 * offset.w),
                                       *(const uint4*)(hp_d + offseti + 4 * offset.x),
@@ -478,10 +500,12 @@ namespace {
                                       *(const uint4*)(hp_d + offseti + 4 * offset.z),
                                       *(const uint4*)(hp_d + offseti + 4 * offset.w));
 #else
-          offset.x = processDataElement(key.x, 5 * offset.x, *(const uint4*)(hp_d + offseti + 4 * offset.x));
-          offset.y = processDataElement(key.y, 5 * offset.y, *(const uint4*)(hp_d + offseti + 4 * offset.y));
-          offset.z = processDataElement(key.z, 5 * offset.z, *(const uint4*)(hp_d + offseti + 4 * offset.z));
-          offset.w = processDataElement(key.w, 5 * offset.w, *(const uint4*)(hp_d + offseti + 4 * offset.w));
+          uint4 dataA, dataB, dataC, dataD;
+          load4(dataA, dataB, dataC, dataD, hp_d, offseti, offset);
+          offset.x = processDataElement(key.x, 5 * offset.x, dataA);
+          offset.y = processDataElement(key.y, 5 * offset.y, dataB);
+          offset.z = processDataElement(key.z, 5 * offset.z, dataC);
+          offset.w = processDataElement(key.w, 5 * offset.w, dataD);
 #endif
         }
         uint32_t offset0 = *(sh + 32 * 4);
