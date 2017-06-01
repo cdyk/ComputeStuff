@@ -416,8 +416,16 @@ namespace {
   void extract(uint32_t* __restrict__ out_d,
                const uint32_t* __restrict__ hp_d)
   {
-    uint32_t N = hp_d[0];
-    uint4 T = *((const uint4*)(hp_d + 4));
+    __shared__ uint32_t sh[32 * 4 + L];
+
+    sh[threadIdx.x] = hp_d[threadIdx.x];
+    if (threadIdx.x < L) {
+      sh[128 + threadIdx.x] = hp_d[128 + threadIdx.x];
+    }
+    __syncthreads();
+
+    uint32_t N = sh[0];
+    uint4 T = *((const uint4*)(sh + 4));
 
     for (uint32_t k = 4 * blockDim.x * blockIdx.x; k < N; k += 4 * gridDim.x * blockDim.x) {
       uint32_t index = k + 4 * threadIdx.x;
@@ -434,16 +442,16 @@ namespace {
         offset = processHistoElement(key, make_uint4(5 * offset.x, 5 * offset.y, 5 * offset.z, 5 * offset.w), T, T, T, T);
 
         offset = processHistoElement(key, make_uint4(5 * offset.x, 5 * offset.y, 5 * offset.z, 5 * offset.w),
-                                     *(const uint4*)(hp_d + 8 + 4 * offset.x),
-                                     *(const uint4*)(hp_d + 8 + 4 * offset.y),
-                                     *(const uint4*)(hp_d + 8 + 4 * offset.z),
-                                     *(const uint4*)(hp_d + 8 + 4 * offset.w));
+                                     *(const uint4*)(sh + 8 + 4 * offset.x),
+                                     *(const uint4*)(sh + 8 + 4 * offset.y),
+                                     *(const uint4*)(sh + 8 + 4 * offset.z),
+                                     *(const uint4*)(sh + 8 + 4 * offset.w));
 
         offset = processHistoElement(key, make_uint4(5 * offset.x, 5 * offset.y, 5 * offset.z, 5 * offset.w),
-                                     *(const uint4*)(hp_d + 28 + 4 * offset.x),
-                                     *(const uint4*)(hp_d + 28 + 4 * offset.y),
-                                     *(const uint4*)(hp_d + 28 + 4 * offset.z),
-                                     *(const uint4*)(hp_d + 28 + 4 * offset.w));
+                                     *(const uint4*)(sh + 28 + 4 * offset.x),
+                                     *(const uint4*)(sh + 28 + 4 * offset.y),
+                                     *(const uint4*)(sh + 28 + 4 * offset.z),
+                                     *(const uint4*)(sh + 28 + 4 * offset.w));
 
 #else
         offset.x = processHistoElement(key.x, 5 * offset.x, T);
@@ -462,7 +470,7 @@ namespace {
         offset.w = processHistoElement(key.w, 5 * offset.w, *(const uint4*)(hp_d + 28 + 4 * offset.w));
 #endif
         for (uint32_t i = L; 1 < i; i--) {
-          uint32_t offseti = *(hp_d + 32 * 4 + i - 1);
+          uint32_t offseti = *(sh + 32 * 4 + i - 1);
 #if 0
           offset = processDataElement(key, make_uint4(5 * offset.x, 5 * offset.y, 5 * offset.z, 5 * offset.w),
                                       *(const uint4*)(hp_d + offseti + 4 * offset.x),
@@ -476,7 +484,7 @@ namespace {
           offset.w = processDataElement(key.w, 5 * offset.w, *(const uint4*)(hp_d + offseti + 4 * offset.w));
 #endif
         }
-        uint32_t offset0 = *(hp_d + 32 * 4);
+        uint32_t offset0 = *(sh + 32 * 4);
         uint4 val;
         val.x = processMaskElement(key.x, 32 * offset.x, hp_d[offset0 + offset.x]);
         val.y = processMaskElement(key.y, 32 * offset.y, hp_d[offset0 + offset.y]);
@@ -510,9 +518,27 @@ namespace {
   template<uint32_t L>
   void runExtract(uint32_t* out_d, const std::vector<uint32_t>& offsets, const uint32_t* hp_d, uint32_t N, cudaStream_t stream)
   {
-    int minGridSize = 0;
-    int blockSize = 0;
-    auto rv = cudaOccupancyMaxPotentialBlockSize(&minGridSize, &blockSize, extract<L>);
+    int blockSize = 128;
+    int maxActiveBlocks = 0;
+    auto rv = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&maxActiveBlocks, extract<L>, blockSize, 0);
+    if (rv != cudaSuccess) {
+      return;
+    }
+
+    int device;
+    cudaDeviceProp props;
+    rv = cudaGetDevice(&device);
+    if (rv != cudaSuccess) {
+      return;
+    }
+
+    rv = cudaGetDeviceProperties(&props, device);
+    if (rv != cudaSuccess) {
+      return;
+    }
+
+    int minGridSize = props.multiProcessorCount * maxActiveBlocks;
+    //rv = cudaOccupancyMaxPotentialBlockSize(&minGridSize, &blockSize, extract<L>);
     //assert(rv == cudaSuccess);
 
     auto blocks = std::min(minGridSize, int((N + 4 * blockSize - 1) / (4 * blockSize)));
