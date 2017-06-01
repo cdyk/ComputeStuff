@@ -7,6 +7,14 @@
 
 #include "HP5.h"
 
+#if defined(__LP64__) || defined(_WIN64)
+#define PTR_REG "l"
+#define PTR_REG_DST "=l"
+#else
+#define PTR_REG "r"
+#define PTR_REG_DST "=r"
+#endif
+
 #define HP5_WARP_COUNT 5
 #define HP5_WARP_SIZE 32
 
@@ -48,14 +56,41 @@ namespace {
 
     __shared__ uint32_t sb1[160];
 
+    // Each warp reads 32*4=128 bytes
+
     for (uint32_t i = 0; i < 20; i++) {
       const uint32_t offset0 = offset0_base + 256 * i;
+#if 1
+      // Streaming load
+      uint32_t value;
+      if (offset0 < n0) {
+        asm volatile("ld.global.cs.u32 %0, [%1];" : "=r"(value) : PTR_REG(sb0_d + offset0));
+      }
+      else {
+        value = 0;
+      }
+#else
+      // regular load 
+      // ld.global.nc.u32 / LDG.E.CI
       const uint32_t value = offset0 < n0 ? sb0_d[offset0] : 0;
+#endif
+
+#if 1
+      // Prefetch data for next row into L2
+      if (i + 1 < 20) {
+        asm volatile("prefetch.global.L2 [%0];"::PTR_REG(sb0_d + offset0 + 256));
+      }
+#endif
+
       const uint32_t warpMask = __ballot(value != 0);
       if (lane == 0) {
         const uint32_t offset1 = offset1_base + 8 * i + warp;
         if (offset1 < n1) {
+#if 1
+          asm volatile("st.global.cs.u32 [%0], %1;"::PTR_REG(hp1_d + offset1), "r"(warpMask));
+#else
           hp1_d[offset1] = warpMask;
+#endif
         }
         sb1[8 * i + warp] = __popc(warpMask);
       }
@@ -69,7 +104,13 @@ namespace {
                               sb1[5 * threadIdx.x + 1],
                               sb1[5 * threadIdx.x + 2],
                               sb1[5 * threadIdx.x + 3]);
+#if 1
+        // Streaming store
+        asm volatile("st.global.cs.v4.u32 [%0], {%1,%2,%3,%4};"
+                     :: PTR_REG((uint4*)hp2_d + offset2), "r"(hp.x), "r"(hp.y), "r"(hp.z), "r"(hp.w));
+#else
         ((uint4*)hp2_d)[offset2] = hp;
+#endif
         sb2_d[offset2] = hp.x + hp.y + hp.z + hp.w + sb1[5 * threadIdx.x + 4];
       }
     }
