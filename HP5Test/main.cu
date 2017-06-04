@@ -99,7 +99,6 @@ void runCompactTest(uint32_t N, uint32_t m)
   uint32_t sum;
   std::vector<uint32_t> out, in;
 
-#if 0
   // Best case
   buildCompactProblemBestCase(out, sum, in, N, m);
   assertSuccess(cudaMemcpy(in_d, in.data(), sizeof(uint32_t)*N, cudaMemcpyHostToDevice));
@@ -133,7 +132,6 @@ void runCompactTest(uint32_t N, uint32_t m)
 
   assertMatching(sum_h, sum);
   assertMatching(out_h.data(), out.data(), sum);
-#endif
 
   // Worst case
   buildCompactProblemWorstCase(out, sum, in, N, m);

@@ -110,7 +110,7 @@ namespace {
         uint32_t warpMaskCSub = bfe(warpMaskC, 8 * lane, 8);
         uint32_t warpMaskDSub = bfe(warpMaskD, 8 * lane, 8);
 
-        uint32_t warpMask = warpMaskASub<<24 | warpMaskBSub<<16 | warpMaskCSub<<8 | warpMaskDSub;
+        uint32_t warpMask = warpMaskDSub<<24 | warpMaskCSub<<16 | warpMaskBSub<<8 | warpMaskASub;
 
         // Interleave bits from the four groups of bits:
 
