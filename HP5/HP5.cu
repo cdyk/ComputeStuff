@@ -141,12 +141,11 @@ namespace {
         // 
         // D7 C7 B7 A7 D6 C6 B6 A6 D5 C5 B5 A5 D4 C4 B4 A4 D3 C3 B3 A3 D2 C2 B2 A2 D1 C1 B1 A1 D0 C0 B0 A0
         // 
-        // X=X&0xF0F00F0F|(X&0x0000F0F0)<<12|(X&0x0F0F0000)>>12;
-        // X=X&0xCC33CC33|(X&0x00CC00CC)<<6|(X&0x33003300)>>6;
-        // X=X&0xA5A5A5A5|(X&0x0A0A0A0A)<<3|(X&0x50505050)>>3;
-        // X=X&0x99999999|(X&0x22222222)<<1|(X&0x44444444)>>1;
 
-
+        warpMask = warpMask & 0xF0F00F0F | (warpMask & 0x0000F0F0) << 12 | (warpMask & 0x0F0F0000) >> 12;
+        warpMask = warpMask & 0xCC33CC33 | (warpMask & 0x00CC00CC) << 6 | (warpMask & 0x33003300) >> 6;
+        warpMask = warpMask & 0xA5A5A5A5 | (warpMask & 0x0A0A0A0A) << 3 | (warpMask & 0x50505050) >> 3;
+        warpMask = warpMask & 0x99999999 | (warpMask & 0x22222222) << 1 | (warpMask & 0x44444444) >> 1;
 
         const uint32_t offset1 = offset1_base + 32 * i + 4 * warp + lane;
         if (offset1 < n1) {
