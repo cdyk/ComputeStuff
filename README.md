@@ -4,6 +4,7 @@ MIT-licensed stand-alone CUDA utility functions.
 
 * [Introduction](#introduction)
   * [How to use](#how-to-use)
+    * [Compute capability](#compute-capability)
     * [Scratch buffer](#scratch-buffer)
     * [In-place operation](#in-place-operation)
     * [Write sum](#write-sum)
@@ -31,6 +32,11 @@ Each of the components is fully contained in its own project (currently [Scan pr
 Typically these projects contains a header file with the public API and one or more source files with the implementation.
 
 In addition, each component have a test project (currently [ScanTest project](ScanTest/ScanTest.vcxproj) and [HP5Test project](HP5Test/HP5Test.vcxproj)) that serves as a combined unit and performance test as well as an example of use.
+
+#### Compute capability
+
+Code in ComputeStuff uses the Kepler warp-shuffle instructions, and therefore the **minimum supported compute capability is 3.0**. It is straight-forward to replace the use of shuffle with use of shared memory, at the expense of some more instructions, and lowering this requirement.
+
 
 #### Scratch buffer
 

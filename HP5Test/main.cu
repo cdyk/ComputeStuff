@@ -205,7 +205,7 @@ int main()
   cudaDeviceProp props;
   assertSuccess(cudaGetDeviceProperties(&props, 0));
   if (props.major < 3) {
-    std::cerr << "Compute capability 3.0 is minimum." << std::endl;
+    std::cerr << "Compute capability 3.0 is minimum, device " << props.name << " has compute capability " << props.major << "." << props.minor << std::endl;
     return -1;
   }
 

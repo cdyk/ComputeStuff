@@ -92,6 +92,7 @@ void runTest(uint32_t N)
       assertSuccess(cudaMemset(output_d, ~0, N * sizeof(uint32_t)));
       ComputeStuff::Scan::inclusiveScan(output_d, scratch_d, input_d, N);
       assertSuccess(cudaStreamSynchronize(0));
+      assertSuccess(cudaGetLastError());
       assertSuccess(cudaMemcpy(offsets.data(), output_d, sizeof(uint32_t)*N, cudaMemcpyDeviceToHost));
       assertMatching(offsets.data(), offsetsGold.data() + 1, N);
     }
@@ -105,6 +106,7 @@ void runTest(uint32_t N)
       assertSuccess(cudaMemset(output_d, ~0, N * sizeof(uint32_t)));
       ComputeStuff::Scan::exclusiveScan(output_d, scratch_d, input_d, N);
       assertSuccess(cudaStreamSynchronize(0));
+      assertSuccess(cudaGetLastError());
       assertSuccess(cudaMemcpy(offsets.data(), output_d, sizeof(uint32_t)*N, cudaMemcpyDeviceToHost));
       assertMatching(offsets.data(), offsetsGold.data(), N);
 
@@ -112,6 +114,7 @@ void runTest(uint32_t N)
       assertSuccess(cudaMemcpy(output_d, input_d, sizeof(uint32_t)*N, cudaMemcpyDeviceToDevice));
       ComputeStuff::Scan::exclusiveScan(output_d, scratch_d, output_d, N);
       assertSuccess(cudaStreamSynchronize(0));
+      assertSuccess(cudaGetLastError());
       assertSuccess(cudaMemcpy(offsets.data(), output_d, sizeof(uint32_t)*N, cudaMemcpyDeviceToHost));
       assertMatching(offsets.data(), offsetsGold.data(), N);
 
@@ -126,6 +129,7 @@ void runTest(uint32_t N)
       assertSuccess(cudaMemset(output_d, ~0, (N + 1) * sizeof(uint32_t)));
       ComputeStuff::Scan::calcOffsets(output_d, scratch_d, input_d, N);
       assertSuccess(cudaStreamSynchronize(0));
+      assertSuccess(cudaGetLastError());
       assertSuccess(cudaMemcpy(offsets.data(), output_d, sizeof(uint32_t)*(N + 1), cudaMemcpyDeviceToHost));
       assertMatching(offsets.data(), offsetsGold.data(), N + 1);
 
@@ -134,6 +138,7 @@ void runTest(uint32_t N)
       assertSuccess(cudaMemset(output_d + N, ~0, sizeof(uint32_t)));
       ComputeStuff::Scan::calcOffsets(output_d, scratch_d, output_d, N);
       assertSuccess(cudaStreamSynchronize(0));
+      assertSuccess(cudaGetLastError());
       assertSuccess(cudaMemcpy(offsets.data(), output_d, sizeof(uint32_t)*(N + 1), cudaMemcpyDeviceToHost));
       assertMatching(offsets.data(), offsetsGold.data(), N + 1);
 
@@ -142,6 +147,7 @@ void runTest(uint32_t N)
       *sum_h = ~0;
       ComputeStuff::Scan::calcOffsets(output_d, sum_d, scratch_d, input_d, N);
       assertSuccess(cudaStreamSynchronize(0));
+      assertSuccess(cudaGetLastError());
       assertSuccess(cudaMemcpy(offsets.data(), output_d, sizeof(uint32_t)*(N + 1), cudaMemcpyDeviceToHost));
       assertMatching(offsets.data(), offsetsGold.data(), N + 1);
       if (*((volatile uint32_t*)sum_h) != offsetsGold.back()) {
@@ -155,6 +161,7 @@ void runTest(uint32_t N)
       *sum_h = ~0;
       ComputeStuff::Scan::calcOffsets(output_d, sum_d, scratch_d, output_d, N);
       assertSuccess(cudaStreamSynchronize(0));
+      assertSuccess(cudaGetLastError());
       assertSuccess(cudaMemcpy(offsets.data(), output_d, sizeof(uint32_t)*(N + 1), cudaMemcpyDeviceToHost));
       assertMatching(offsets.data(), offsetsGold.data(), N + 1);
       if (*((volatile uint32_t*)sum_h) != offsetsGold.back()) {
@@ -171,6 +178,7 @@ void runTest(uint32_t N)
       assertSuccess(cudaMemcpy(input_d, compact.data(), sizeof(uint32_t)*N, cudaMemcpyHostToDevice));
       ComputeStuff::Scan::compact(output_d, sum_d, scratch_d, input_d, N);
       assertSuccess(cudaStreamSynchronize(0));
+      assertSuccess(cudaGetLastError());
       assertSuccess(cudaMemcpy(offsets.data(), output_d, sizeof(uint32_t)*N, cudaMemcpyDeviceToHost));
       assertMatching(offsets.data(), compactGold.data(), compactGold_sum);
       if (*((volatile uint32_t*)sum_h) != compactGold_sum) {
@@ -183,6 +191,7 @@ void runTest(uint32_t N)
       assertSuccess(cudaMemcpy(output_d, input_d, sizeof(uint32_t)*N, cudaMemcpyDeviceToDevice));
       ComputeStuff::Scan::compact(output_d, sum_d, scratch_d, output_d, N);
       assertSuccess(cudaStreamSynchronize(0));
+      assertSuccess(cudaGetLastError());
       assertSuccess(cudaMemcpy(offsets.data(), output_d, sizeof(uint32_t)*N, cudaMemcpyDeviceToHost));
       assertMatching(offsets.data(), compactGold.data(), compactGold_sum);
       if (*((volatile uint32_t*)sum_h) != compactGold_sum) {
@@ -311,7 +320,7 @@ int main(int argc, char** argv)
   cudaDeviceProp props;
   assertSuccess(cudaGetDeviceProperties(&props, 0));
   if (props.major < 3) {
-    std::cerr << "Compute capability 3.0 is minimum." << std::endl;
+    std::cerr << "Compute capability 3.0 is minimum, device " << props.name << " has compute capability " << props.major << "." << props.minor << std::endl;
     return -1;
   }
 
