@@ -210,12 +210,10 @@ int main()
   }
 
 
-  for (uint64_t N = 1000000; N < (uint64_t)(props.totalGlobalMem / (sizeof(uint32_t) * 4)); N = 3 * N + N / 3) {
-    for (uint32_t m = 32; m < 128; m *=2) {
+  for (uint64_t N = 1; N < (uint64_t)(props.totalGlobalMem / (sizeof(uint32_t) * 4)); N = 3 * N + N / 3) {
+    for (uint32_t m = 1; m < 128; m *=2) {
       runCompactTest(static_cast<uint32_t>(N), m);
-      break;
     }
-    break;
   }
 
 }

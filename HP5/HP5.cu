@@ -73,6 +73,7 @@ namespace {
         asm volatile("ld.global.cs.v4.u32 {%0, %1, %2, %3}, [%4];" : "=r"(value.x), "=r"(value.y), "=r"(value.z), "=r"(value.w) : PTR_REG(sb0_d + offset0));
       }
       else {
+        value = make_uint4(0, 0, 0, 0);
         if (offset0 < n0) {
           asm volatile("ld.global.cs.u32 %0, [%1];" : "=r"(value.x) : PTR_REG(sb0_d + offset0));
           if (offset0 + 1 < n0) {
@@ -80,18 +81,8 @@ namespace {
             if (offset0 + 2 < n0) {
               asm volatile("ld.global.cs.u32 %0, [%1];" : "=r"(value.z) : PTR_REG(sb0_d + offset0 + 2));
             }
-            else {
-              value.y = 0;
-            }
-          }
-          else {
-            value.y = 0;
           }
         }
-        else {
-          value.x = 0;
-        }
-        value.z = 0;
       }
 
       // Prefetch data for next row into L2
