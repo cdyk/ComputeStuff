@@ -175,7 +175,8 @@ void runCompactTest(uint32_t N, uint32_t m)
 
   std::cerr << std::setprecision(3)
     << "| " << N << " | "
-    << (int)(100/m) << "% | "
+    << (100.0 / m) << "% | "
+    << sum << " | "
     << (elapsedA / 50.0) << "ms | "
     << (elapsedB / 50.0) << "ms | "
     << (elapsedB / elapsedA) << " | "
@@ -211,7 +212,7 @@ int main()
 
 
   for (uint64_t N = 1; N < (uint64_t)(props.totalGlobalMem / (sizeof(uint32_t) * 4)); N = 3 * N + N / 3) {
-    for (uint32_t m = 1; m < 128; m *=2) {
+    for (uint32_t m = 32; m < 512; m *= 2) {
       runCompactTest(static_cast<uint32_t>(N), m);
     }
   }
