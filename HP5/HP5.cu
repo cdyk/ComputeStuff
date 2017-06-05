@@ -40,7 +40,7 @@ namespace {
     }
   }
 
-  __device__ __forceinline__ uint32_t bfe(uint32_t val, uint32_t o, uint32_t n)
+  __device__ __forceinline__ uint32_t _bfe(uint32_t val, uint32_t o, uint32_t n)
   {
     uint32_t rv;
     asm("bfe.u32 %0, %1, %2, %3;" : "=r"(rv) : "r"(val), "r"(o), "r"(n));
@@ -96,42 +96,12 @@ namespace {
       const uint32_t warpMaskD = __ballot(value.w != 0);
 
       if (lane < 4) {
-        uint32_t warpMaskASub = bfe(warpMaskA, 8 * lane, 8);
-        uint32_t warpMaskBSub = bfe(warpMaskB, 8 * lane, 8);
-        uint32_t warpMaskCSub = bfe(warpMaskC, 8 * lane, 8);
-        uint32_t warpMaskDSub = bfe(warpMaskD, 8 * lane, 8);
+        uint32_t warpMaskASub = _bfe(warpMaskA, 8 * lane, 8);
+        uint32_t warpMaskBSub = _bfe(warpMaskB, 8 * lane, 8);
+        uint32_t warpMaskCSub = _bfe(warpMaskC, 8 * lane, 8);
+        uint32_t warpMaskDSub = _bfe(warpMaskD, 8 * lane, 8);
 
         uint32_t warpMask = warpMaskDSub<<24 | warpMaskCSub<<16 | warpMaskBSub<<8 | warpMaskASub;
-
-        // Interleave bits from the four groups of bits:
-
-        // D7 D6 D5 D4 D3 D2 D1 D0 C7 C6 C5 C4 C3 C2 C1 C0 B7 B6 B5 B4 B3 B2 B1 B0 A7 A6 A5 A4 A3 A2 A1 A0
-        //
-        // D7 D6 D5 D4 -- -- -- -- C7 C6 C5 C4 -- -- -- -- -- -- -- -- B3 B2 B1 B0 -- -- -- -- A3 A2 A1 A0  : (X & 0xF0F00F0F)                  11110000111100000000111100001111
-        // -- -- -- -- B7 B6 B5 B4 -- -- -- -- A7 A6 A5 A4 -- -- -- --                                      : (X & 0x0000F0F0)<<12  00000000000000001111000011110000
-        //                                     -- -- -- -- D3 D2 D1 D0 -- -- -- -- C3 C2 C1 C0 -- -- -- --  : (X & 0x0F0F0000)>>12                          00001111000011110000000000000000
-        // 
-        // D7 D6 D5 D4 B7 B6 B5 B4 C7 C6 C5 C4 A7 A6 A5 A4 D3 D2 D1 D0 B3 B2 B1 B0 C3 C2 C1 C0 A3 A2 A1 A0
-        // 
-        // 
-        // D7 D6 -- -- B7 B6 -- -- -- -- C5 C4 -- -- A5 A4 D3 D2 -- -- B3 B2 -- -- -- -- C1 C0 -- -- A1 A0 : (X & 0xCC33CC33)           11001100001100111100110000110011
-        // -- -- C7 C6 -- -- A7 A6 -- -- -- -- -- -- -- -- -- -- C3 C2 -- -- A3 A2 -- --                   : (X & 0x00CC00CC)<<6  00000000110011000000000011001100
-        //                   -- -- D5 D4 -- -- B5 B4 -- -- -- -- -- -- -- -- -- -- D1 D0 -- -- B1 B0 -- -- : (X & 0x33003300)>>6              00110011000000000011001100000000
-        // 
-        // D7 D6 C7 C6	B7 B6 A7 A6	D5 D4 C5 C4 B5 B4 A5 A4 D3 D2 C3 C2 B3 B2 A3 A2 D1 D0 C1 C0 B1 B0 A1 A0
-        // 
-        // D7 -- C7 -- -- B6 -- A6 D5 -- C5 -- -- B4 -- A4 D3 -- C3 -- -- B2 -- A2 D1 -- C1 -- -- B0 -- A0 : (X & 0xA5A5A5A5)         10100101101001011010010110100101
-        // -- B7 -- A7 -- -- -- -- -- B5 -- A5 -- -- -- -- -- B3 -- A3 -- -- -- -- -- B1 -- A1 --          : (X & 0x0A0A0A0A)<<3   00001010000010100000101000001010
-        //          -- D6 -- C6 -- -- -- -- -- D4 -- C4 -- -- -- -- -- D2 -- C2 -- -- -- -- -- D0 -- C0 -- : (X & 0x50505050)>>3         01010000010100000101000001010000
-        // 
-        // D7 B7 C7 A7 D6 B6 C6 A6 D5 B5 C5 A5 D4 B4 C4 A4 D3 B3 C3 A3 D2 B2 C2 A2 D1 B1 C1 A1 D0 B0 C0 A0 
-        // 
-        // D7 -- -- A7 D6 -- -- A6 D5 -- -- A5 D4 -- -- A4 D3 -- -- A3 D2 -- -- A2 D1 -- -- A1 D0 -- -- A0 : (X & 0x99999999)            10011001100110011001100110011001
-        // -- C7 -- -- -- C6 -- -- -- C5 -- -- -- C4 -- -- -- C3 -- -- -- C2 -- -- -- C1 -- -- -- C0 --    : (X & 0x22222222)<<1        00100010001000100010001000100010
-        //    -- B7 -- -- -- B6 -- -- -- B5 -- -- -- B4 -- -- -- B3 -- -- -- B2 -- -- -- B1 -- -- -- B0 -- : (X & 0x44444444)>>1          01000100010001000100010001000100
-        // 
-        // D7 C7 B7 A7 D6 C6 B6 A6 D5 C5 B5 A5 D4 C4 B4 A4 D3 C3 B3 A3 D2 C2 B2 A2 D1 C1 B1 A1 D0 C0 B0 A0
-        // 
 
         warpMask = warpMask & 0xF0F00F0F | (warpMask & 0x0000F0F0) << 12 | (warpMask & 0x0F0F0000) >> 12;
         warpMask = warpMask & 0xCC33CC33 | (warpMask & 0x00CC00CC) << 6 | (warpMask & 0x33003300) >> 6;
