@@ -47,6 +47,13 @@ namespace {
     return rv;
   }
 
+  __device__ __forceinline__ uint32_t _bfi(uint32_t src, uint32_t into, uint32_t o, uint32_t n)
+  {
+    uint32_t rv;
+    asm("bfi.b32 %0, %1, %2, %3, %4;" : "=r"(rv) : "r"(src), "r"(into), "r"(o), "r"(n));
+    return rv;
+  }
+
   __global__ __launch_bounds__(256) void reduceBase2b(uint32_t* __restrict__ hp2_d,
                                                       uint32_t* __restrict__ sb2_d,
                                                       const uint32_t n2,
@@ -101,9 +108,11 @@ namespace {
         uint32_t warpMaskCSub = _bfe(warpMaskC, 8 * lane, 8);
         uint32_t warpMaskDSub = _bfe(warpMaskD, 8 * lane, 8);
 
-        uint32_t warpMask = warpMaskDSub<<24 | warpMaskCSub<<16 | warpMaskBSub<<8 | warpMaskASub;
+        uint32_t warpMaskAB = _bfi(warpMaskBSub, warpMaskASub, 8, 8);
+        uint32_t warpMaskCD = _bfi(warpMaskDSub, warpMaskCSub, 8, 8);
+        uint32_t warpMask = _bfi(warpMaskCD, warpMaskAB, 16, 16);
 
-        warpMask = warpMask & 0xF0F00F0F | (warpMask & 0x0000F0F0) << 12 | (warpMask & 0x0F0F0000) >> 12;
+        warpMask = warpMask & 0xF0F00F0F | (warpMaskAB & 0x0000F0F0) << 12 | (warpMaskCD & 0x0F0F) << 4;
         warpMask = warpMask & 0xCC33CC33 | (warpMask & 0x00CC00CC) << 6 | (warpMask & 0x33003300) >> 6;
         warpMask = warpMask & 0xA5A5A5A5 | (warpMask & 0x0A0A0A0A) << 3 | (warpMask & 0x50505050) >> 3;
         warpMask = warpMask & 0x99999999 | (warpMask & 0x22222222) << 1 | (warpMask & 0x44444444) >> 1;
