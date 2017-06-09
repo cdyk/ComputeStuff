@@ -302,6 +302,71 @@ namespace {
   }
 
 
+  __global__  __launch_bounds__(5 * HP5_WARP_SIZE)
+  void reduce3(uint4* __restrict__ hp3_d,
+               uint32_t* __restrict__ sb3_d,
+               const uint32_t n3,
+               uint4* __restrict__ hp2_d,
+               const uint32_t n2,
+               uint4* __restrict__ hp1_d,
+               const uint32_t n1,
+               const uint32_t* __restrict__ sb0_d,
+               const uint32_t n0)
+  {
+    __shared__ uint32_t sb0[5 * 5 * HP5_WARP_SIZE];
+    __shared__ uint32_t sb1[5 * 5 * HP5_WARP_SIZE];
+    __shared__ uint32_t sb2[5 * HP5_WARP_SIZE];
+    const uint32_t tid5 = 5 * threadIdx.x;
+
+    // Read 5 x 5 x 5 x 32 values from sb0_d over 5 iterations
+
+    uint32_t offset0 = 5 * 5 * 5 * HP5_WARP_SIZE * blockIdx.x;
+    uint32_t offset1 = 5 * 5 * HP5_WARP_SIZE * blockIdx.x;
+    uint32_t offset2 = 5 * HP5_WARP_SIZE * blockIdx.x + threadIdx.x;
+    uint32_t offset3 = HP5_WARP_SIZE * blockIdx.x + threadIdx.x;
+
+    uint32_t o1 = threadIdx.x;
+    for (uint32_t k = 0; k < 5; k++) {
+
+      uint32_t o0 = threadIdx.x;
+      for (uint32_t i = 0; i < 5; i++) {
+        uint32_t q = offset0 + o0;
+        sb0[o0] = q < n0 ? sb0_d[q] : 0;
+        o0 += 5 * HP5_WARP_SIZE;
+      }
+      offset0 += 5 * 5 * HP5_WARP_SIZE;
+      __syncthreads();
+
+      uint4 hp = make_uint4(sb0[tid5 + 0], sb0[tid5 + 1], sb0[tid5 + 2], sb0[tid5 + 3]);
+      uint32_t q1 = offset1 + o1;
+      if (q1 < n1) {
+        hp1_d[q1] = hp;
+      }
+      sb1[o1] = hp.x + hp.y + hp.z + hp.w + sb0[tid5 + 4];
+
+      o1 += 5 * HP5_WARP_SIZE;
+      __syncthreads();
+    }
+
+    // Write 5 x 32 x 4 uints to hp2, 5 x 32 uints to sb3
+    uint4 hp = make_uint4(sb1[tid5 + 0], sb1[tid5 + 1], sb1[tid5 + 2], sb1[tid5 + 3]);
+    if (offset2 < n2) {
+      hp2_d[offset2] = hp;
+    }
+    sb2[threadIdx.x] = hp.x + hp.y + hp.z + hp.w + sb1[tid5 + 4];
+    __syncthreads();
+
+    // Write 32 x 4 uints to hp3, 32 uints to sb3
+    if (threadIdx.x < HP5_WARP_SIZE && offset3 < n3) {
+      uint4 hp = make_uint4(sb2[tid5 + 0], sb2[tid5 + 1], sb2[tid5 + 2], sb2[tid5 + 3]);
+      hp3_d[offset3] = hp;
+      sb3_d[offset3] = hp.x + hp.y + hp.z + hp.w + sb2[tid5 + 4];
+    }
+
+  }
+
+
+
   template<bool mask_input, bool write_sum>
   __global__
   __launch_bounds__(128)
@@ -635,6 +700,19 @@ void ComputeStuff::HP5::compact(uint32_t* out_d,
       sb = !sb;
     }
 
+    for (; i + 2 < L; i += 3) {
+      ::reduce3 << <(levels[i + 2] + 31) / 32, 160, 0, stream >> > (reinterpret_cast<uint4*>(scratch_d + offsets[i + 2]),
+                                                                    scratch_d + offsets[L + 1 + (sb ? 1 : 0)],
+                                                                    levels[i + 2],
+                                                                    reinterpret_cast<uint4*>(scratch_d + offsets[i+1]),
+                                                                    levels[i + 1],
+                                                                    reinterpret_cast<uint4*>(scratch_d + offsets[i]),
+                                                                    levels[i],
+                                                                    scratch_d + offsets[L + 1 + (sb ? 0 : 1)],
+                                                                    levels[i - 1]);
+      sb = !sb;
+    }
+
     for (; i + 1 < L; i += 2) {
       ::reduce2 << <(levels[i + 1] + 31) / 32, 160, 0, stream >> > (reinterpret_cast<uint4*>(scratch_d + offsets[i + 1]),
                                                                     scratch_d + offsets[L + 1 + (sb ? 1 : 0)],
@@ -644,7 +722,6 @@ void ComputeStuff::HP5::compact(uint32_t* out_d,
                                                                     scratch_d + offsets[L + 1 + (sb ? 0 : 1)],
                                                                     levels[i - 1]);
       sb = !sb;
-
     }
 
     for (; i < L; i++) {
