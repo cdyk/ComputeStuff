@@ -254,6 +254,54 @@ namespace {
     }
   }
 
+  __global__  __launch_bounds__(5 * HP5_WARP_SIZE)
+  void reduce2(uint4* __restrict__ hp2_d,
+               uint32_t* __restrict__ sb2_d,
+               const uint32_t n2,
+               uint4* __restrict__ hp1_d,
+               const uint32_t n1,
+               const uint32_t* __restrict__ sb0_d,
+               const uint32_t n0)
+  {
+    const uint32_t offset0 = 5 * 5 * HP5_WARP_SIZE * blockIdx.x;
+
+    __shared__ uint32_t sb[5 * 5 * HP5_WARP_SIZE];
+    uint32_t o = threadIdx.x;
+    for (uint32_t i = 0; i < 5; i++) {
+      uint32_t q = offset0 + o;
+      sb[o] = q < n0 ? sb0_d[q] : 0;
+      o += 5 * HP5_WARP_SIZE;
+    }
+
+    __syncthreads();
+
+    __shared__ uint32_t sb1[5 * HP5_WARP_SIZE];
+    const uint32_t offset1 = 5 * HP5_WARP_SIZE * blockIdx.x + threadIdx.x;
+    uint4 hp = make_uint4(sb[5 * threadIdx.x + 0],
+                          sb[5 * threadIdx.x + 1],
+                          sb[5 * threadIdx.x + 2],
+                          sb[5 * threadIdx.x + 3]);
+    if (offset1 < n1) {
+      hp1_d[offset1] = hp;
+    }
+    sb1[threadIdx.x] = hp.x + hp.y + hp.z + hp.w + sb[5 * threadIdx.x + 4];
+
+    __syncthreads();
+
+    if (threadIdx.x < HP5_WARP_SIZE) { // First warp
+      const uint32_t offset2 = HP5_WARP_SIZE * blockIdx.x + threadIdx.x;
+      if (offset2 < n2) {
+        uint4 hp = make_uint4(sb1[5 * threadIdx.x + 0],
+                              sb1[5 * threadIdx.x + 1],
+                              sb1[5 * threadIdx.x + 2],
+                              sb1[5 * threadIdx.x + 3]);
+        hp2_d[offset2] = hp;
+        sb2_d[offset2] = hp.x + hp.y + hp.z + hp.w + sb1[5 * threadIdx.x + 4];
+      }
+    }
+  }
+
+
   template<bool mask_input, bool write_sum>
   __global__
   __launch_bounds__(128)
@@ -587,6 +635,17 @@ void ComputeStuff::HP5::compact(uint32_t* out_d,
       sb = !sb;
     }
 
+    for (; i + 1 < L; i += 2) {
+      ::reduce2 << <(levels[i + 1] + 31) / 32, 160, 0, stream >> > (reinterpret_cast<uint4*>(scratch_d + offsets[i + 1]),
+                                                                    scratch_d + offsets[L + 1 + (sb ? 1 : 0)],
+                                                                    levels[i + 1],
+                                                                    reinterpret_cast<uint4*>(scratch_d + offsets[i]),
+                                                                    levels[i],
+                                                                    scratch_d + offsets[L + 1 + (sb ? 0 : 1)],
+                                                                    levels[i - 1]);
+      sb = !sb;
+
+    }
 
     for (; i < L; i++) {
       ::reduce1<<<(levels[i] + 31)/32, 160, 0, stream>>>(reinterpret_cast<uint4*>(scratch_d + offsets[i]),
