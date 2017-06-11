@@ -179,9 +179,10 @@ void runCompactTest(uint32_t N, uint32_t m)
 
   std::cerr << std::setprecision(3)
     << "| " << N << " | "
-    << (int)(100/m) << "% | "
-    << (elapsedA / Nrun) << "ms | "
-    << (elapsedB / Nrun) << "ms | "
+    << (100.0 / m) << "% | "
+    << sum << " | "
+    << (elapsedA / 50.0) << "ms | "
+    << (elapsedB / 50.0) << "ms | "
     << (elapsedB / elapsedA) << " | "
     << (elapsedC / Nrun) << "ms | "
     << (elapsedD / Nrun) << "ms | "
@@ -209,13 +210,13 @@ int main()
   cudaDeviceProp props;
   assertSuccess(cudaGetDeviceProperties(&props, 0));
   if (props.major < 3) {
-    std::cerr << "Compute capability 3.0 is minimum." << std::endl;
+    std::cerr << "Compute capability 3.0 is minimum, device " << props.name << " has compute capability " << props.major << "." << props.minor << std::endl;
     return -1;
   }
 
 
   for (uint64_t N = 1; N < (uint64_t)(props.totalGlobalMem / (sizeof(uint32_t) * 4)); N = 3 * N + N / 3) {
-    for (uint32_t m = 32; m < 128; m *=2) {
+    for (uint32_t m = 32; m < 512; m *= 2) {
       runCompactTest(static_cast<uint32_t>(N), m);
       break;
     }
