@@ -1,4 +1,3 @@
-#if 1
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
 
@@ -49,9 +48,47 @@ void main() {
 
   GLfloat vertexData[]
   {
-    0.f, 0.f, 0.f,  0.f, 0.f, 1.f,
-    1.f, 0.f, 0.f,  0.f, 0.f, 1.f,
-    1.f, 1.f, 0.f,  0.f, 0.f, 1.f,
+     1.f, 0.f, 0.f,  1.f, 0.f, 0.f,
+     1.f, 1.f, 0.f,  1.f, 0.f, 0.f,
+     1.f, 1.f, 1.f,  1.f, 0.f, 0.f,
+     1.f, 1.f, 1.f,  1.f, 0.f, 0.f,
+     1.f, 0.f, 1.f,  1.f, 0.f, 0.f,
+     1.f, 0.f, 0.f,  1.f, 0.f, 0.f,
+
+     0.f, 1.f, 0.f,  0.f, 1.f, 0.f,
+     0.f, 1.f, 1.f,  0.f, 1.f, 0.f,
+     1.f, 1.f, 1.f,  0.f, 1.f, 0.f,
+     1.f, 1.f, 1.f,  0.f, 1.f, 0.f,
+     1.f, 1.f, 0.f,  0.f, 1.f, 0.f,
+     0.f, 1.f, 0.f,  0.f, 1.f, 0.f,
+
+     0.f, 0.f, 1.f,  0.f, 0.f, 1.f,
+     1.f, 0.f, 1.f,  0.f, 0.f, 1.f,
+     1.f, 1.f, 1.f,  0.f, 0.f, 1.f,
+     1.f, 1.f, 1.f,  0.f, 0.f, 1.f,
+     0.f, 1.f, 1.f,  0.f, 0.f, 1.f,
+     0.f, 0.f, 1.f,  0.f, 0.f, 1.f,
+
+     0.f, 0.f, 0.f,  -1.f, 0.f, 0.f,
+     0.f, 1.f, 1.f,  -1.f, 0.f, 0.f,
+     0.f, 1.f, 0.f,  -1.f, 0.f, 0.f,
+     0.f, 1.f, 1.f,  -1.f, 0.f, 0.f,
+     0.f, 0.f, 0.f,  -1.f, 0.f, 0.f,
+     0.f, 0.f, 1.f,  -1.f, 0.f, 0.f,
+
+     0.f, 0.f, 0.f,  0.f, -1.f, 0.f,
+     1.f, 0.f, 1.f,  0.f, -1.f, 0.f,
+     0.f, 0.f, 1.f,  0.f, -1.f, 0.f,
+     1.f, 0.f, 1.f,  0.f, -1.f, 0.f,
+     0.f, 0.f, 0.f,  0.f, -1.f, 0.f,
+     1.f, 0.f, 0.f,  0.f, -1.f, 0.f,
+
+     0.f, 0.f, 0.f,  0.f, 0.f, -1.f,
+     1.f, 1.f, 0.f,  0.f, 0.f, -1.f,
+     1.f, 0.f, 0.f,  0.f, 0.f, -1.f,
+     1.f, 1.f, 0.f,  0.f, 0.f, -1.f,
+     0.f, 0.f, 0.f,  0.f, 0.f, -1.f,
+     0.f, 1.f, 0.f,  0.f, 0.f, -1.f,
   };
 
 
@@ -254,7 +291,8 @@ int main(int argc, char** argv)
     std::chrono::duration<double> elapsed = std::chrono::system_clock::now() - start;
     auto seconds = elapsed.count();
 
-
+    float center[16];
+    translateMatrix(center, -0.5f, -0.5f, -0.5f);
 
     float rx[16];
     rotMatrixX(rx, 1.1*seconds);
@@ -266,13 +304,16 @@ int main(int argc, char** argv)
     rotMatrixZ(rz, 1.3*seconds);
 
     float shift[16];
-    translateMatrix(shift, 0.f, 0.f, -2.0f);
+    translateMatrix(shift, 0.f, 0.f, -3.0f);
 
     float frustum[16];
-    frustumMatrix(frustum, 1280.0 / 720.f, 1.f, 1.f, 4.f);
+    frustumMatrix(frustum, 1280.0 / 720.f, 1.f, 1.f, 8.f);
+
+    float rx_center[16];
+    matrixMul4(rx_center, rx, center);
 
     float ry_rx[16];
-    matrixMul4(ry_rx, ry, rx);
+    matrixMul4(ry_rx, ry, rx_center);
 
     float rz_ry_rx[16];
     matrixMul4(rz_ry_rx, rz, ry_rx);
@@ -283,12 +324,13 @@ int main(int argc, char** argv)
     float frustum_shift_rz_ry_rx[16];
     matrixMul4(frustum_shift_rz_ry_rx, frustum, shift_rz_ry_rx);
 
+    glEnable(GL_CULL_FACE);
     glUseProgram(simplePrg);
     glBindVertexArray(vbo);
     glUniformMatrix4fv(0, 1, GL_FALSE, rz_ry_rx);
     glUniformMatrix4fv(1, 1, GL_FALSE, frustum_shift_rz_ry_rx);
 
-    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glDrawArrays(GL_TRIANGLES, 0, sizeof(vertexData)/(6*sizeof(float)));
     CHECK_GL;
 
 
@@ -302,9 +344,3 @@ int main(int argc, char** argv)
 
   return EXIT_SUCCESS;
 }
-#else
-int main(int argc, char** argv)
-{
-  return 0;
-}
-#endif
