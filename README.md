@@ -2,19 +2,21 @@
 
 MIT-licensed stand-alone CUDA utility functions.
 
-* [Introduction](#introduction)
-  * [How to use](#how-to-use)
-    * [Compute capability](#compute-capability)
-    * [Scratch buffer](#scratch-buffer)
-    * [In-place operation](#in-place-operation)
-    * [Write sum](#write-sum)
-    * [Concurrent invocations](#concurrent-invocations)
-* [Prefix sum / Scan](#prefix-sum-Scan)
-  * [Performance](#performance)
-* [5:1 HistoPyramids](#histoPyramids)
-  * [Performance](#performance-1)
-* [Credits](#credits)
-* [License](#license)
+- [ComputeStuff](#computestuff)
+  - [Introduction](#introduction)
+    - [Building dependencies](#building-dependencies)
+    - [How to use](#how-to-use)
+      - [Compute capability](#compute-capability)
+      - [Scratch buffer](#scratch-buffer)
+      - [Write sum](#write-sum)
+      - [Concurrent invocations](#concurrent-invocations)
+    - [In-place operation](#in-place-operation)
+  - [Prefix sum / Scan](#prefix-sum--scan)
+    - [Performance](#performance)
+  - [5:1 HistoPyramids](#51-histopyramids)
+    - [Performance](#performance-1)
+  - [Credits](#credits)
+  - [License](#license)
 
 
 ## Introduction
@@ -24,6 +26,24 @@ The intent is to make various useful functions of mine available for the public 
 The functions are designed to have a minimum of dependencies, so integration is mostly just adding the relevant files into your project.
 
 I've started with variants of scan and the 5-to-1 HistoPyramid, and will continue with HistoPyramid variations and Marching Cubes.
+
+### Building dependencies
+
+The Marching Cubes test application project uses [GLFW](https://www.glfw.org/) and OpenGL to open a window that visualizes the result. If you plan to build that project, you need to  to do the following.
+
+Clone the git repo, and update submodules
+```
+git submodule update --init --recursive
+```
+Then configure GLFW by
+```
+cd libs\glfw
+mkdir build
+cd build
+cmake-gui ..
+```
+Press "Configure" button and select 64bit VS2017. Open libs\glfw\build\GLFW.sln and build.
+
 
 ### How to use
 
