@@ -2,11 +2,13 @@
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
 
+#include <cmath>
 #include <cassert>
 #include <vector>
 #include <string>
 #include <iostream>
 #include <fstream>
+#include <chrono>
 
 namespace {
 
@@ -136,6 +138,73 @@ void main() {
   }
 
 
+  void rotMatrixX(float* dst, const float angle)
+  {
+    const auto c = std::cos(angle);
+    const auto s = std::sin(angle);
+    dst[4 * 0 + 0] = 1.f; dst[4 * 0 + 1] = 0.f; dst[4 * 0 + 2] = 0.f; dst[4 * 0 + 3] = 0.f;
+    dst[4 * 1 + 0] = 0.f; dst[4 * 1 + 1] = c;   dst[4 * 1 + 2] = s;   dst[4 * 1 + 3] = 0.f;
+    dst[4 * 2 + 0] = 0.f; dst[4 * 2 + 1] = -s;  dst[4 * 2 + 2] = c;   dst[4 * 2 + 3] = 0.f;
+    dst[4 * 3 + 0] = 0.f; dst[4 * 3 + 1] = 0.f; dst[4 * 3 + 2] = 0.f; dst[4 * 3 + 3] = 1.f;
+  }
+
+  void rotMatrixY(float* dst, const float angle)
+  {
+    const auto c = std::cos(angle);
+    const auto s = std::sin(angle);
+    dst[4 * 0 + 0] = c;   dst[4 * 0 + 1] = 0.f; dst[4 * 0 + 2] = -s;  dst[4 * 0 + 3] = 0.f;
+    dst[4 * 1 + 0] = 0.f; dst[4 * 1 + 1] = 1.f; dst[4 * 1 + 2] = 0.f; dst[4 * 1 + 3] = 0.f;
+    dst[4 * 2 + 0] = s;   dst[4 * 2 + 1] = 0.f; dst[4 * 2 + 2] = c;   dst[4 * 2 + 3] = 0.f;
+    dst[4 * 3 + 0] = 0.f; dst[4 * 3 + 1] = 0.f; dst[4 * 3 + 2] = 0.f; dst[4 * 3 + 3] = 1.f;
+  }
+
+  void rotMatrixZ(float* dst, const float angle)
+  {
+    const auto c = std::cos(angle);
+    const auto s = std::sin(angle);
+    dst[4 * 0 + 0] = c;   dst[4 * 0 + 1] = s;   dst[4 * 0 + 2] = 0.f; dst[4 * 0 + 3] = 0.f;
+    dst[4 * 1 + 0] = -s;  dst[4 * 1 + 1] = c;   dst[4 * 1 + 2] = 0.f; dst[4 * 1 + 3] = 0.f;
+    dst[4 * 2 + 0] = 0.f; dst[4 * 2 + 1] = 0.f; dst[4 * 2 + 2] = 1.f; dst[4 * 2 + 3] = 0.f;
+    dst[4 * 3 + 0] = 0.f; dst[4 * 3 + 1] = 0.f; dst[4 * 3 + 2] = 0.f; dst[4 * 3 + 3] = 1.f;
+  }
+
+  void translateMatrix(float* dst, const float x, const float y, const float z)
+  {
+    dst[4 * 0 + 0] = 1.f; dst[4 * 0 + 1] = 0.f; dst[4 * 0 + 2] = 0.f; dst[4 * 0 + 3] = 0.f;
+    dst[4 * 1 + 0] = 0.f; dst[4 * 1 + 1] = 1.f; dst[4 * 1 + 2] = 0.f; dst[4 * 1 + 3] = 0.f;
+    dst[4 * 2 + 0] = 0.f; dst[4 * 2 + 1] = 0.f; dst[4 * 2 + 2] = 1.f; dst[4 * 2 + 3] = 0.f;
+    dst[4 * 3 + 0] = x;   dst[4 * 3 + 1] = y;   dst[4 * 3 + 2] = z;   dst[4 * 3 + 3] = 1.f;
+  }
+
+
+  void frustumMatrix(float* dst, const float w, const float h, const float n, const float f)
+  {
+    auto a = 2.f*n / w;
+    auto b = 2.f*n / h;
+    auto c = -(f + n) / (f - n);
+    auto d = -2.f*f*n / (f - n);
+    dst[4 * 0 + 0] = a;   dst[4 * 0 + 1] = 0.f; dst[4 * 0 + 2] = 0.f; dst[4 * 0 + 3] = 0.f;
+    dst[4 * 1 + 0] = 0.f; dst[4 * 1 + 1] = b;   dst[4 * 1 + 2] = 0.f; dst[4 * 1 + 3] = 0.f;
+    dst[4 * 2 + 0] = 0.f; dst[4 * 2 + 1] = 0.f; dst[4 * 2 + 2] = c;   dst[4 * 2 + 3] =-1.f;
+    dst[4 * 3 + 0] = 0.f; dst[4 * 3 + 1] = 0;   dst[4 * 3 + 2] = d;   dst[4 * 3 + 3] = 0.f;
+  }
+
+
+  void matrixMul4(float* D, const float *A, const float *B)
+  {
+    for (unsigned i = 0; i < 4; i++) {
+      for (unsigned j = 0; j < 4; j++) {
+
+        float sum = 0.f;
+        for (unsigned k = 0; k < 4; k++) {
+          sum += A[4 * k + j] * B[4 * i + k];
+        }
+        D[4 * i + j] = sum;
+      }
+    }
+  }
+
+
 }
 
 
@@ -178,26 +247,46 @@ int main(int argc, char** argv)
   glEnableVertexAttribArray(1);
 
 
+  auto start = std::chrono::system_clock::now();
   while (!glfwWindowShouldClose(win)) {
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    GLfloat MV[] = {
-      1.f, 0.f, 0.f, 0.f,
-      0.f, 1.f, 0.f, 0.f,
-      0.f, 0.f, 1.f, 0.f,
-      0.f, 0.f, 0.f, 1.f,
-    };
+    std::chrono::duration<double> elapsed = std::chrono::system_clock::now() - start;
+    auto seconds = elapsed.count();
 
-    GLfloat MVP[] = {
-      1.f, 0.f, 0.f, 0.f,
-      0.f, 1.f, 0.f, 0.f,
-      0.f, 0.f, 1.f, 0.f,
-      0.f, 0.f, 0.f, 1.f,
-    };
+
+
+    float rx[16];
+    rotMatrixX(rx, 1.1*seconds);
+ 
+    float ry[16];
+    rotMatrixY(ry, 1.7*seconds);
+
+    float rz[16];
+    rotMatrixZ(rz, 1.3*seconds);
+
+    float shift[16];
+    translateMatrix(shift, 0.f, 0.f, -2.0f);
+
+    float frustum[16];
+    frustumMatrix(frustum, 1280.0 / 720.f, 1.f, 1.f, 4.f);
+
+    float ry_rx[16];
+    matrixMul4(ry_rx, ry, rx);
+
+    float rz_ry_rx[16];
+    matrixMul4(rz_ry_rx, rz, ry_rx);
+
+    float shift_rz_ry_rx[16];
+    matrixMul4(shift_rz_ry_rx, shift, rz_ry_rx);
+
+    float frustum_shift_rz_ry_rx[16];
+    matrixMul4(frustum_shift_rz_ry_rx, frustum, shift_rz_ry_rx);
 
     glUseProgram(simplePrg);
     glBindVertexArray(vbo);
-    glUniformMatrix4fv(0, 1, GL_FALSE, MV);
-    glUniformMatrix4fv(1, 1, GL_FALSE, MVP);
+    glUniformMatrix4fv(0, 1, GL_FALSE, rz_ry_rx);
+    glUniformMatrix4fv(1, 1, GL_FALSE, frustum_shift_rz_ry_rx);
 
     glDrawArrays(GL_TRIANGLES, 0, 3);
     CHECK_GL;
