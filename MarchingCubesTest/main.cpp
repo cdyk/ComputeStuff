@@ -286,6 +286,11 @@ int main(int argc, char** argv)
 
   auto start = std::chrono::system_clock::now();
   while (!glfwWindowShouldClose(win)) {
+    int width, height;
+    glfwGetWindowSize(win, &width, &height);
+
+    glViewport(0, 0, width, height);
+
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     std::chrono::duration<double> elapsed = std::chrono::system_clock::now() - start;
@@ -307,7 +312,7 @@ int main(int argc, char** argv)
     translateMatrix(shift, 0.f, 0.f, -3.0f);
 
     float frustum[16];
-    frustumMatrix(frustum, 1280.0 / 720.f, 1.f, 1.f, 8.f);
+    frustumMatrix(frustum, float(width) / float(height), 1.f, 1.f, 8.f);
 
     float rx_center[16];
     matrixMul4(rx_center, rx, center);
