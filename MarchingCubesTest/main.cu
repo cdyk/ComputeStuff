@@ -12,7 +12,7 @@
 
 #include <MC.h>
 
-using namespace ComputeStuff::CUHP5MC;
+using namespace ComputeStuff::MC;
 
 namespace {
 
@@ -257,7 +257,51 @@ void main() {
     }
   }
 
+  void* buildCayleyField(uint32_t nx, uint32_t ny, uint32_t nz, FieldFormat format)
+  {
+    size_t elementSize = 0;
+    switch (format) {
+    case FieldFormat::UInt8: elementSize = sizeof(uint8_t); break;
+    case FieldFormat::UInt16: elementSize = sizeof(uint16_t); break;
+    case FieldFormat::Float: elementSize = sizeof(float); break;
+    default: assert(false); break;
+    }
+    size_t memSize = nx * ny * nz * elementSize;
+    void * hostMem = malloc(memSize);
+    for (unsigned k = 0; k < nz; k++) {
+      for (unsigned j = 0; j < ny; j++) {
+        for (unsigned i = 0; i < nx; i++) {
+          float x = (2.f*i) / (nx - 1.f) - 1.f;
+          float y = (2.f*j) / (ny - 1.f) - 1.f;
+          float z = (2.f*k) / (nz - 1.f) - 1.f;
+          float v = 1.f - 16.f*x*y*z - 4.f*(x*x + y * y + z * z);
+          switch (format) {
+          case FieldFormat::UInt8:
+            v = 0.5f*255.f*(v + 1.f);
+            if (v < 0.f) v = 0.f;
+            if (255.f < v) v = 255.f;
+            ((uint8_t*)hostMem)[(k*ny + j)*nx + i] = uint8_t(v);
+            break;
+          case FieldFormat::UInt16:
+            v = 0.5f*65535.f*(v + 1.f);
+            if (v < 0.f) v = 0.f;
+            if (65535.f < v) v = 65535.f;
+            ((uint16_t*)hostMem)[(k*ny + j)*nx + i] = uint16_t(v);
+            break;
+          case FieldFormat::Float:
+            ((float*)hostMem)[(k*ny + j)*nx + i] = v;
+            break;
+          }
+        }
+      }
+    }
 
+    void* deviceMem = nullptr;
+    CHECKED_CUDA(cudaMalloc(&deviceMem, memSize));
+    CHECKED_CUDA(cudaMemcpy(deviceMem, hostMem, memSize, cudaMemcpyHostToDevice));
+    free(hostMem);
+    return deviceMem;
+  }
 
 
 }
@@ -324,6 +368,10 @@ int main(int argc, char** argv)
   cudaSetDevice(deviceIndex);
   CHECKED_CUDA(cudaStreamCreate(&stream));
 
+  auto * fieldDevice = buildCayleyField(nx, ny, nz, format);
+
+  auto * tables = createTables(stream);
+  auto * pyramid = createHistoPyramid(stream, tables, nx, ny, nz);
 
 
   GLuint simpleVS = createShader(simpleVS_src, GL_VERTEX_SHADER);
@@ -352,6 +400,18 @@ int main(int argc, char** argv)
   while (!glfwWindowShouldClose(win)) {
     int width, height;
     glfwGetWindowSize(win, &width, &height);
+
+    float iso = 0.0;
+    switch (format) {
+    case FieldFormat::UInt8:
+      iso = 0.5f*255.f*(iso + 1.f);
+      break;
+    case FieldFormat::UInt16:
+      iso = 0.5f*65535.f*(iso + 1.f);
+    default: break;
+    }
+
+    buildHistoPyramid(stream, pyramid, iso);
 
     glViewport(0, 0, width, height);
 
