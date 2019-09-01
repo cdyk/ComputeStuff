@@ -1,3 +1,4 @@
+#include <cuda_runtime_api.h>
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
 
@@ -8,6 +9,10 @@
 #include <iostream>
 #include <fstream>
 #include <chrono>
+
+#include <MC.h>
+
+using namespace ComputeStuff::CUHP5MC;
 
 namespace {
 
@@ -92,10 +97,9 @@ void main() {
   };
 
 
-  bool checkGL()
+  [[noreturn]]
+  void handleOpenGLError(GLenum error, const std::string file, int line)
   {
-    GLenum error = glGetError();
-    if (error == GL_NO_ERROR) return true;
     do {
       switch (error) {
       case GL_INVALID_ENUM: fprintf(stderr, "GL_INVALID_ENUM\n"); break;
@@ -107,11 +111,23 @@ void main() {
       case GL_STACK_UNDERFLOW: fprintf(stderr, "GL_STACK_UNDERFLOW\n"); break;
       default: fprintf(stderr, "Unknown error"); break;
       }
+      error = glGetError();
     } while (error != GL_NO_ERROR);
-    return false;
+    exit(EXIT_FAILURE);
   }
 
-#define CHECK_GL do { bool ok = checkGL(); assert(ok); } while(0)
+#define CHECK_GL do { GLenum error = glGetError(); if(error != GL_NO_ERROR) handleOpenGLError(error, __FILE__, __LINE__); } while(0)
+
+  [[noreturn]]
+  void handleCudaError(cudaError_t error, const std::string file, int line)
+  {
+    fprintf(stderr, "%s@%d: CUDA: %s\n", file.c_str(), line, cudaGetErrorString(error));
+    exit(EXIT_FAILURE);
+  }
+
+#define CHECK_CUDA do { cudaError_t error = cudaGetLastError(); if(error != cudaSuccess) handleCudaError(error, __FILE__, __LINE__); } while(0)
+
+#define CHECKED_CUDA(a) do { cudaError_t error = (a); if(error != cudaSuccess) handleCudaError(error, __FILE__, __LINE__); } while(0)
 
   GLuint createShader(const std::string& src, GLenum shader_type)
   {
@@ -242,12 +258,40 @@ void main() {
   }
 
 
+
+
 }
+
 
 
 int main(int argc, char** argv)
 {
+  cudaStream_t stream;
   GLFWwindow* win;
+  FieldFormat format = FieldFormat::UInt8;
+  uint32_t nx = 128;
+  uint32_t ny = 128;
+  uint32_t nz = 128;
+  int deviceIndex = 0;
+
+  for (int i = 1; i < argc; i++) {
+    if (i + 1 < argc && (strcmp(argv[i], "-d") == 0 || strcmp(argv[i], "--device") == 0)) { deviceIndex = std::atoi(argv[i+1]); i++; }
+    else if (i + 1 < argc && strcmp(argv[i], "-nx") == 0) { nx = uint32_t(std::atoi(argv[i+1])); i++; }
+    else if (i + 1 < argc && strcmp(argv[i], "-ny") == 0) { ny = uint32_t(std::atoi(argv[i+1])); i++; }
+    else if (i + 1 < argc && strcmp(argv[i], "-nz") == 0) { nz = uint32_t(std::atoi(argv[i+1])); i++; }
+    else if (i + 1 < argc && strcmp(argv[i], "-n") == 0) { nx = uint32_t(std::atoi(argv[i+1])); ny = nx; nz = nx; i++; }
+    else if (i + 1 < argc && strcmp(argv[i], "-f") == 0) {
+      if (strcmp(argv[i + 1], "uint8") == 0) { format = FieldFormat::UInt8; }
+      else if (strcmp(argv[i + 1], "uint16") == 0) { format = FieldFormat::UInt16; }
+      else if (strcmp(argv[i + 1], "float") == 0) { format = FieldFormat::Float; }
+      else {
+        fprintf(stderr, "Unknown format '%s'", argv[i + 1]);
+        return EXIT_FAILURE;
+      }
+      i++;
+    }
+  }
+
 
   glfwSetErrorCallback(onGLFWError);
   if (!glfwInit()) {
@@ -261,6 +305,26 @@ int main(int argc, char** argv)
   win = glfwCreateWindow(1280, 720, "Marching cubes test application", nullptr, nullptr);
   glfwMakeContextCurrent(win);
   gladLoadGL(glfwGetProcAddress);
+
+  int deviceCount;
+  cudaGetDeviceCount(&deviceCount);
+  if (deviceCount == 0) {
+    fprintf(stderr, "No CUDA-enabled devices available.");
+    return EXIT_FAILURE;
+  }
+  for (int i = 0; i < deviceCount; i++) {
+    cudaDeviceProp dev_prop;
+    cudaGetDeviceProperties(&dev_prop, i);
+    fprintf(stderr, "%c[%i] %s cap=%d.%d\n", i==deviceIndex ? '*' : ' ', i, dev_prop.name, dev_prop.major, dev_prop.minor);
+  }
+  if (deviceIndex < 0 || deviceCount <= deviceIndex) {
+    fprintf(stderr, "Illegal CUDA device index %d\n", deviceIndex);
+    return EXIT_FAILURE;
+  }
+  cudaSetDevice(deviceIndex);
+  CHECKED_CUDA(cudaStreamCreate(&stream));
+
+
 
   GLuint simpleVS = createShader(simpleVS_src, GL_VERTEX_SHADER);
   assert(simpleVS != 0);
