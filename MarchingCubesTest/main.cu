@@ -16,6 +16,13 @@ using namespace ComputeStuff::MC;
 
 namespace {
 
+  FieldFormat format = FieldFormat::UInt8;
+  uint32_t nx = 128;
+  uint32_t ny = 128;
+  uint32_t nz = 128;
+
+  std::vector<char> scalarField_host;
+
   void onGLFWError(int error, const char* what)
   {
     fprintf(stderr, "GLFW Error: %s\n", what);
@@ -257,50 +264,139 @@ void main() {
     }
   }
 
-  void* buildCayleyField(uint32_t nx, uint32_t ny, uint32_t nz, FieldFormat format)
+  constexpr float cayley(unsigned i, unsigned j, unsigned k, unsigned nx, unsigned ny, unsigned nz)
   {
-    size_t elementSize = 0;
+    float x = (2.f * i) / (nx - 1.f) - 1.f;
+    float y = (2.f * j) / (ny - 1.f) - 1.f;
+    float z = (2.f * k) / (nz - 1.f) - 1.f;
+    float v = 1.f - 16.f * x * y * z - 4.f * (x * x + y * y + z * z);
+    return v;
+  }
+
+  void buildCayleyField()
+  {
+    const size_t N = static_cast<size_t>(nx) * ny * nz;
     switch (format) {
-    case FieldFormat::UInt8: elementSize = sizeof(uint8_t); break;
-    case FieldFormat::UInt16: elementSize = sizeof(uint16_t); break;
-    case FieldFormat::Float: elementSize = sizeof(float); break;
-    default: assert(false); break;
-    }
-    size_t memSize = nx * ny * nz * elementSize;
-    void * hostMem = malloc(memSize);
-    for (unsigned k = 0; k < nz; k++) {
-      for (unsigned j = 0; j < ny; j++) {
-        for (unsigned i = 0; i < nx; i++) {
-          float x = (2.f*i) / (nx - 1.f) - 1.f;
-          float y = (2.f*j) / (ny - 1.f) - 1.f;
-          float z = (2.f*k) / (nz - 1.f) - 1.f;
-          float v = 1.f - 16.f*x*y*z - 4.f*(x*x + y * y + z * z);
-          switch (format) {
-          case FieldFormat::UInt8:
-            v = 0.5f*255.f*(v + 1.f);
+    case FieldFormat::UInt8: {
+      scalarField_host.resize(N);
+      auto* dst = reinterpret_cast<uint8_t*>(scalarField_host.data());
+      for (unsigned k = 0; k < nz; k++) {
+        for (unsigned j = 0; j < ny; j++) {
+          for (unsigned i = 0; i < nx; i++) {
+            float v = cayley(i, j, k, nx, ny, nz);
+            v = 0.5f * 255.f * (v + 1.f);
             if (v < 0.f) v = 0.f;
             if (255.f < v) v = 255.f;
-            ((uint8_t*)hostMem)[(k*ny + j)*nx + i] = uint8_t(v);
-            break;
-          case FieldFormat::UInt16:
-            v = 0.5f*65535.f*(v + 1.f);
+            *dst++ = static_cast<uint8_t>(v);
+          }
+        }
+      }
+      break;
+    }
+    case FieldFormat::UInt16: {
+      scalarField_host.resize(sizeof(uint16_t) * N);
+      auto* dst = reinterpret_cast<uint16_t*>(scalarField_host.data());
+      for (unsigned k = 0; k < nz; k++) {
+        for (unsigned j = 0; j < ny; j++) {
+          for (unsigned i = 0; i < nx; i++) {
+            float v = cayley(i, j, k, nx, ny, nz);
+            v = 0.5f * 65535.f * (v + 1.f);
             if (v < 0.f) v = 0.f;
             if (65535.f < v) v = 65535.f;
-            ((uint16_t*)hostMem)[(k*ny + j)*nx + i] = uint16_t(v);
-            break;
-          case FieldFormat::Float:
-            ((float*)hostMem)[(k*ny + j)*nx + i] = v;
-            break;
+            *dst++ = static_cast<uint16_t>(v);
+          }
+        }
+      }
+      break;
+    }
+    case FieldFormat::Float: {
+      scalarField_host.resize(sizeof(float) * N);
+      auto* dst = reinterpret_cast<float*>(scalarField_host.data());
+      for (unsigned k = 0; k < nz; k++) {
+        for (unsigned j = 0; j < ny; j++) {
+          for (unsigned i = 0; i < nx; i++) {
+            *dst++ = cayley(i, j, k, nx, ny, nz);
+          }
+        }
+      }
+      break;
+    }
+    default:
+      assert(false && "Unhandled case");
+      break;
+    }
+  }
+
+
+  bool readFile(const char* path)
+  {
+    assert(path);
+    fprintf(stderr, "Reading %s...\n", path);
+
+    FILE* fp = fopen(path, "rb");
+    if (!fp) {
+      fprintf(stderr, "Error opening file \"%s\" for reading.\n", path);
+      return false;
+    }
+    if (fseek(fp, 0L, SEEK_END) == 0) {
+      uint8_t header[6];
+      long size = ftell(fp);
+      if (sizeof(header) <= size) {
+        if (fseek(fp, 0L, SEEK_SET) == 0) {
+          if (fread(header, sizeof(header), 1, fp) == 1) {
+            nx = header[0] | header[1] << 8;
+            ny = header[2] | header[3] << 8;
+            nz = header[4] | header[5] << 8;
+            size_t N = static_cast<size_t>(nx) * ny * nz;
+            if ((N + 3) * 2 != size) {
+              fprintf(stderr, "Unexpected file size.\n");
+            }
+            else {
+              std::vector<uint8_t> tmp(2*N);
+              if (fread(tmp.data(), 2, N, fp) == N) {
+                switch (format) {
+                case FieldFormat::UInt8: {
+                  scalarField_host.resize(N);
+                  const auto* dst = reinterpret_cast<uint8_t*>(scalarField_host.data());
+                  for (size_t i = 0; i < N; i++) {
+                    const uint32_t v = tmp[2 * i + 0] | tmp[2 * i + 1] << 8;
+                    scalarField_host[i] = v >> 4; // 12 bits are in use.
+                  }
+                  break;
+                }
+                case FieldFormat::UInt16: {
+                  scalarField_host.resize(sizeof(uint16_t) * N);
+                  const auto* dst = reinterpret_cast<uint16_t*>(scalarField_host.data());
+                  for (size_t i = 0; i < N; i++) {
+                    const uint32_t v = tmp[2 * i + 0] | tmp[2 * i + 1] << 8;
+                    scalarField_host[i] = v;
+                  }
+                  break;
+                }
+                case FieldFormat::Float: {
+                  scalarField_host.resize(sizeof(float) * N);
+                  const auto* dst = reinterpret_cast<float*>(scalarField_host.data());
+                  for (size_t i = 0; i < N; i++) {
+                    const uint32_t v = tmp[2 * i + 0] | tmp[2 * i + 1] << 8;
+                    scalarField_host[i] = v;
+                  }
+                  break;
+                }
+                default:
+                  assert(false && "Unhandled case");
+                }
+                fprintf(stderr, "Successfully loaded %s\n", path);
+                fclose(fp);
+                return true;
+              }
+            }
           }
         }
       }
     }
-
-    void* deviceMem = nullptr;
-    CHECKED_CUDA(cudaMalloc(&deviceMem, memSize));
-    CHECKED_CUDA(cudaMemcpy(deviceMem, hostMem, memSize, cudaMemcpyHostToDevice));
-    free(hostMem);
-    return deviceMem;
+    fprintf(stderr, "Error loading \"%s\"", path);
+    fclose(fp);
+    return false;
   }
 
 
@@ -312,10 +408,7 @@ int main(int argc, char** argv)
 {
   cudaStream_t stream;
   GLFWwindow* win;
-  FieldFormat format = FieldFormat::UInt8;
-  uint32_t nx = 128;
-  uint32_t ny = 128;
-  uint32_t nz = 128;
+  const char* path = nullptr;
   int deviceIndex = 0;
 
   for (int i = 1; i < argc; i++) {
@@ -333,6 +426,13 @@ int main(int argc, char** argv)
         return EXIT_FAILURE;
       }
       i++;
+    }
+    else {
+      if (path) {
+        fprintf(stderr, "%s: input file already specified\n", argv[i]);
+        return EXIT_FAILURE;
+      }
+      path = argv[i];
     }
   }
 
@@ -368,7 +468,23 @@ int main(int argc, char** argv)
   cudaSetDevice(deviceIndex);
   CHECKED_CUDA(cudaStreamCreate(&stream));
 
-  auto * fieldDevice = buildCayleyField(nx, ny, nz, format);
+
+  // Set up scalar field
+  if (!path) {
+    fprintf(stderr, "No input file specified.\n");
+    return EXIT_FAILURE;
+  }
+  else if (strcmp("cayley", path) == 0) {
+    buildCayleyField();
+  }
+  else if (!readFile(path)) {
+    return EXIT_FAILURE;
+  }
+  fprintf(stderr, "Scalar field is [%d x %d x %d] (%d cells total)\n", nx, ny, nz, nx * ny * nz);
+  void* deviceMem = nullptr;
+  CHECKED_CUDA(cudaMalloc(&deviceMem, scalarField_host.size()));
+  CHECKED_CUDA(cudaMemcpy(deviceMem, scalarField_host.data(), scalarField_host.size(), cudaMemcpyHostToDevice));
+
 
   auto * tables = createTables(stream);
   auto * pyramid = createHistoPyramid(stream, tables, nx, ny, nz);
