@@ -137,6 +137,7 @@ namespace {
 
   }
 
+#if 0
   __global__ __launch_bounds__(256) void reduceBase2(uint32_t* __restrict__ hp2_d,
                                                      uint32_t* __restrict__ sb2_d,
                                                      const uint32_t n2,
@@ -213,6 +214,7 @@ namespace {
     }
 
   }
+#endif
 
   // Reads 160 values, outputs HP level of 128 values, and 32 sideband values.
   __global__

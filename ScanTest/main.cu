@@ -71,7 +71,7 @@ void runTest(uint32_t N)
     // Set up problem
     offsetsGold[0] = 0;
     uint32_t compactGold_sum = 0;
-    for (size_t i = 0; i < N; i++) {
+    for (uint32_t i = 0; i < N; i++) {
       counts[i] = modulo == 1 ? 1 : (i % modulo);
       offsetsGold[i + 1] = offsetsGold[i] + counts[i];
 
