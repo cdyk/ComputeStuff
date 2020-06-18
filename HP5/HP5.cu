@@ -30,7 +30,7 @@ namespace {
     const uint32_t offset0 = blockDim.x * blockIdx.x + threadIdx.x;
     const uint32_t lane = threadIdx.x %  HP5_WARP_SIZE;
     const uint32_t value = offset0 < n0 ? src[offset0] : 0;
-    const uint32_t warpMask = __ballot(value != 0);
+    const uint32_t warpMask = __ballot_sync(0xffffffffu, value != 0);
     if (lane == 0) {
       const uint32_t offset1 = offset0 / HP5_WARP_SIZE;
       if (offset1 < n1) {
@@ -90,10 +90,10 @@ namespace {
         asm volatile("prefetch.global.L2 [%0];"::PTR_REG(sb0_d + offset0 + 4 * 256));
       }
 
-      const uint32_t warpMaskA = __ballot(value.x != 0);
-      const uint32_t warpMaskB = __ballot(value.y != 0);
-      const uint32_t warpMaskC = __ballot(value.z != 0);
-      const uint32_t warpMaskD = __ballot(value.w != 0);
+      const uint32_t warpMaskA = __ballot_sync(0xffffffffu, value.x != 0);
+      const uint32_t warpMaskB = __ballot_sync(0xffffffffu, value.y != 0);
+      const uint32_t warpMaskC = __ballot_sync(0xffffffffu, value.z != 0);
+      const uint32_t warpMaskD = __ballot_sync(0xffffffffu, value.w != 0);
 
       if (lane < 4) {
         uint32_t warpMaskASub = _bfe(warpMaskA, 8 * lane, 8);
@@ -137,6 +137,7 @@ namespace {
 
   }
 
+#if 0
   __global__ __launch_bounds__(256) void reduceBase2(uint32_t* __restrict__ hp2_d,
                                                      uint32_t* __restrict__ sb2_d,
                                                      const uint32_t n2,
@@ -179,7 +180,7 @@ namespace {
       }
 #endif
 
-      const uint32_t warpMask = __ballot(value != 0);
+      const uint32_t warpMask = __ballot_sync(0xffffffffu, value != 0);
       if (lane == 0) {
         const uint32_t offset1 = offset1_base + 8 * i + warp;
         if (offset1 < n1) {
@@ -213,6 +214,7 @@ namespace {
     }
 
   }
+#endif
 
   // Reads 160 values, outputs HP level of 128 values, and 32 sideband values.
   __global__

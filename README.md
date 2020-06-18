@@ -134,7 +134,112 @@ Please consult [Scan/Scan.h](Scan/Scan.h) for details on the API entry points.
 
 ### Performance
 
-The implementation has decent performance, the numbers below is a comparison with thrust's exclusive scan on an GTX 980 Ti. See [ScanTest/main.cu](ScanTest/main.cu) for details.
+The implementation has decent performance, the numbers below is a comparison with thrust's exclusive scan using CUDA 11 on an RTX 2080. See [ScanTest/main.cu](ScanTest/main.cu) for details.
+
+| N | thrust | ComputeStuff | ratio |
+|---|--------|--------------|-------|
+|1|0.0447008ms|0.00257408ms|0.0575847|
+|3|0.0449325ms|0.00286464ms|0.0637543|
+|10|0.0448845ms|0.0026624ms|0.0593167|
+|33|0.0448166ms|0.00267072ms|0.0595921|
+|110|0.0458342ms|0.0027072ms|0.059065|
+|366|0.0456371ms|0.00270336ms|0.059236|
+|1220|0.044855ms|0.00775232ms|0.172831|
+|4066|0.0570458ms|0.00770048ms|0.134988|
+|13553|0.0449408ms|0.00922368ms|0.205241|
+|45176|0.0450163ms|0.00804224ms|0.178652|
+|150586|0.0563738ms|0.00872384ms|0.15475|
+|501953|0.0529978ms|0.0173939ms|0.328201|
+|1673176|0.0787661ms|0.0643507ms|0.816985|
+|5577253|0.185761ms|0.203887ms|1.09757|
+|18590843|0.470511ms|0.581562ms|1.23602|
+|61969476|1.43524ms|1.9094ms|1.33037|
+|206564920|5.09301ms|6.43358ms|1.26322|
+
+
+
+
+## 5:1 HistoPyramids
+
+The 5-to-1 HistoPyramid is a variation of the traditional 4-to-1 HistoPyramid (or just HistoPyramid) that, instead of reducing four elements into one, it reduces five elements, hence the name.
+
+The details are explained in [GPU Accelerated Data Expansion Marching Cubes Algorithm](http://on-demand.gputechconf.com/gtc/2010/presentations/S12020-GPU-Accelerated-Data-Expansion-Marching-Cubes-Algorithm.pdf) from GTC 2010.
+
+
+Implementation of
+
+* **compact:** Extract indices where the corresponding input has a non-zero value (a.k.a. subset, stream-compact and copy-if), and write the number of entries in the output somewhere in device memory.
+
+Please consult [HP5/HP5.h](HP5/HP5.h) for details on the API entry points.
+
+### Performance
+
+The implementation starts to become decent. The numbers below is a comparsion to ComputeStuff's own scan implementation (see [Scan performance](#performance)), and was run on an RTX 2080 on CUDA 11.
+
+Ratio is the time HP5 uses compared to Scan (lower is better for HP5's case). The test runs compact on N elements where "% selected" of the elements are marked for selection. In the min-scatter scenario, all selected elements are in the start of the buffer, which is the best-case for HP cache utilization, while max-scatter evenly spaces the selected element out, which is the worst-case for HP cache utilization. Please consult [HP5Test/main.cu](HP5Test/main.cu) for further details.
+
+
+| N    | % selected| selected | min-scatter scan | min-scatter hp5    |min-scatter ratio| max-scatter scan | max-scatter hp5    | max-scatter ratio|
+|------|-------|-------------|-----|----------|-------|---------|----------|------|
+| 1220 | 3.13% | 39 | 0.00963ms | 0.01ms | 1.04 | 0.00958ms | 0.0101ms | 1.05 |
+| 4066 | 3.13% | 128 | 0.0098ms | 0.0119ms | 1.22 | 0.00975ms | 0.0121ms | 1.24 |
+| 13553 | 3.13% | 424 | 0.0166ms | 0.0208ms | 1.26 | 0.00998ms | 0.0122ms | 1.22 |
+| 45176 | 3.13% | 1412 | 0.00996ms | 0.015ms | 1.51 | 0.01ms | 0.0153ms | 1.53 |
+| 150586 | 3.13% | 4706 | 0.0111ms | 0.0162ms | 1.46 | 0.0175ms | 0.0161ms | 0.918 |
+| 501953 | 3.13% | 15687 | 0.0311ms | 0.0203ms | 0.652 | 0.0197ms | 0.0182ms | 0.922 |
+| 1673176 | 3.13% | 52287 | 0.0499ms | 0.0342ms | 0.685 | 0.0506ms | 0.0331ms | 0.655 |
+| 5577253 | 3.13% | 174290 | 0.126ms | 0.0872ms | 0.692 | 0.129ms | 0.0864ms | 0.672 |
+| 18590843 | 3.13% | 580964 | 0.377ms | 0.254ms | 0.674 | 0.387ms | 0.259ms | 0.67 |
+| 61969476 | 3.13% | 1936547 | 1.21ms | 0.809ms | 0.666 | 1.26ms | 0.828ms | 0.656 |
+| 206564920 | 3.13% | 6455154 | 4.03ms | 2.71ms | 0.674 | 4.13ms | 2.81ms | 0.68 |
+| 1220 | 1.56% | 20 | 0.00958ms | 0.00996ms | 1.04 | 0.0097ms | 0.0124ms | 1.28 |
+| 4066 | 1.56% | 64 | 0.00974ms | 0.0173ms | 1.78 | 0.0159ms | 0.0122ms | 0.765 |
+| 13553 | 1.56% | 212 | 0.01ms | 0.012ms | 1.2 | 0.0099ms | 0.0121ms | 1.22 |
+| 45176 | 1.56% | 706 | 0.01ms | 0.0151ms | 1.5 | 0.0106ms | 0.018ms | 1.7 |
+| 150586 | 1.56% | 2353 | 0.0109ms | 0.0156ms | 1.43 | 0.0111ms | 0.0158ms | 1.43 |
+| 501953 | 1.56% | 7844 | 0.0203ms | 0.0185ms | 0.912 | 0.0197ms | 0.0189ms | 0.962 |
+| 1673176 | 1.56% | 26144 | 0.0498ms | 0.0338ms | 0.679 | 0.05ms | 0.0316ms | 0.631 |
+| 5577253 | 1.56% | 87145 | 0.134ms | 0.0819ms | 0.609 | 0.127ms | 0.0811ms | 0.637 |
+| 18590843 | 1.56% | 290482 | 0.373ms | 0.24ms | 0.643 | 0.38ms | 0.242ms | 0.636 |
+| 61969476 | 1.56% | 968274 | 1.21ms | 0.782ms | 0.644 | 1.23ms | 0.772ms | 0.628 |
+| 206564920 | 1.56% | 3227577 | 3.98ms | 2.58ms | 0.648 | 4.07ms | 2.61ms | 0.642 |
+| 1220 | 0.781% | 10 | 0.0129ms | 0.00999ms | 0.777 | 0.00958ms | 0.0102ms | 1.06 |
+| 4066 | 0.781% | 32 | 0.00965ms | 0.012ms | 1.25 | 0.00975ms | 0.012ms | 1.23 |
+| 13553 | 0.781% | 106 | 0.01ms | 0.012ms | 1.19 | 0.00995ms | 0.0121ms | 1.22 |
+| 45176 | 0.781% | 353 | 0.0105ms | 0.0151ms | 1.44 | 0.0101ms | 0.0154ms | 1.53 |
+| 150586 | 0.781% | 1177 | 0.011ms | 0.0155ms | 1.41 | 0.0178ms | 0.0222ms | 1.25 |
+| 501953 | 0.781% | 3922 | 0.0201ms | 0.0188ms | 0.934 | 0.0198ms | 0.023ms | 1.16 |
+| 1673176 | 0.781% | 13072 | 0.0495ms | 0.0327ms | 0.661 | 0.0499ms | 0.0315ms | 0.632 |
+| 5577253 | 0.781% | 43573 | 0.125ms | 0.0784ms | 0.626 | 0.127ms | 0.0773ms | 0.61 |
+| 18590843 | 0.781% | 145241 | 0.371ms | 0.229ms | 0.618 | 0.376ms | 0.238ms | 0.633 |
+| 61969476 | 0.781% | 484137 | 1.2ms | 0.754ms | 0.63 | 1.21ms | 0.758ms | 0.625 |
+| 206564920 | 0.781% | 1613789 | 4ms | 2.49ms | 0.622 | 4.03ms | 2.56ms | 0.634 |
+| 1220 | 0.391% | 5 | 0.00991ms | 0.00993ms | 1 | 0.00956ms | 0.0102ms | 1.07 |
+| 4066 | 0.391% | 16 | 0.00971ms | 0.012ms | 1.24 | 0.00975ms | 0.0121ms | 1.24 |
+| 13553 | 0.391% | 53 | 0.0151ms | 0.018ms | 1.19 | 0.00991ms | 0.0122ms | 1.23 |
+| 45176 | 0.391% | 177 | 0.00997ms | 0.015ms | 1.51 | 0.0101ms | 0.0155ms | 1.54 |
+| 150586 | 0.391% | 589 | 0.011ms | 0.0154ms | 1.39 | 0.0112ms | 0.0178ms | 1.59 |
+| 501953 | 0.391% | 1961 | 0.0233ms | 0.0191ms | 0.821 | 0.02ms | 0.0181ms | 0.904 |
+| 1673176 | 0.391% | 6536 | 0.0492ms | 0.0325ms | 0.661 | 0.0548ms | 0.032ms | 0.583 |
+| 5577253 | 0.391% | 21787 | 0.125ms | 0.0754ms | 0.603 | 0.124ms | 0.0742ms | 0.601 |
+| 18590843 | 0.391% | 72621 | 0.37ms | 0.227ms | 0.613 | 0.373ms | 0.236ms | 0.633 |
+| 61969476 | 0.391% | 242069 | 1.28ms | 0.785ms | 0.614 | 1.21ms | 0.763ms | 0.633 |
+| 206564920 | 0.391% | 806895 | 3.96ms | 2.45ms | 0.62 | 3.98ms | 2.54ms | 0.639 |
+
+
+## Credits
+
+The ComputeStuff implementation was initially written and is maintained by Christopher Dyken, with contributions from Gernot Ziegler.
+
+## License
+
+ComputeStuff is licensed under the MIT license, please see [LICENSE](LICENSE) for more information.
+
+# Old performance numbers
+
+## CUDA 8 on GTX 980 Ti
+
+### ScanTest
 
 | N | thrust | ComputeStuff | ratio |
 |---|--------|--------------|-------|
@@ -156,26 +261,7 @@ The implementation has decent performance, the numbers below is a comparison wit
 |61969476|4.88424ms|2.91978ms|0.597797|
 |206564920|14.1531ms|9.76045ms|0.689633|
 
-## 5:1 HistoPyramids
-
-The 5-to-1 HistoPyramid is a variation of the traditional 4-to-1 HistoPyramid (or just HistoPyramid) that, instead of reducing four elements into one, it reduces five elements, hence the name.
-
-The details are explained in [GPU Accelerated Data Expansion Marching Cubes Algorithm](http://on-demand.gputechconf.com/gtc/2010/presentations/S12020-GPU-Accelerated-Data-Expansion-Marching-Cubes-Algorithm.pdf) from GTC 2010.
-
-
-Implementation of
-
-* **compact:** Extract indices where the corresponding input has a non-zero value (a.k.a. subset, stream-compact and copy-if), and write the number of entries in the output somewhere in device memory.
-
-Please consult [HP5/HP5.h](HP5/HP5.h) for details on the API entry points.
-
-### Performance
-
-The implementation starts to become decent. The numbers below is a comparsion to ComputeStuff's own scan implementation, which is faster than thrust (see [Scan performance](#performance)), and was run on an GTX 980 Ti.
-
-Ratio is the time HP5 uses compared to Scan (lower is better for HP5's case). The test runs compact on N elements where "% selected" of the elements are marked for selection. In the min-scatter scenario, all selected elements are in the start of the buffer, which is the best-case for HP cache utilization, while max-scatter evenly spaces the selected element out, which is the worst-case for HP cache utilization. Please consult [HP5Test/main.cu](HP5Test/main.cu) for further details.
-
-
+### HP5Test
 
 | N    | % selected| selected | min-scatter scan | min-scatter hp5    |min-scatter ratio| max-scatter scan | max-scatter hp5    | max-scatter ratio|
 |------|-------|-------------|-----|----------|-------|---------|----------|------|
@@ -223,11 +309,3 @@ Ratio is the time HP5 uses compared to Scan (lower is better for HP5's case). Th
 | 18590843 | 0.391% | 72621 | 0.622ms | 0.362ms | 0.582 | 0.609ms | 0.369ms | 0.606 |
 | 61969476 | 0.391% | 242069 | 2ms | 1.09ms | 0.544 | 1.97ms | 1.13ms | 0.572 |
 | 206564920 | 0.391% | 806895 | 6.59ms | 3.5ms | 0.531 | 6.47ms | 3.6ms | 0.557 |
-
-## Credits
-
-The ComputeStuff implementation was initially written and is maintained by Christopher Dyken, with contributions from Gernot Ziegler.
-
-## License
-
-ComputeStuff is licensed under the MIT license, please see [LICENSE](LICENSE) for more information.
