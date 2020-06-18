@@ -48,7 +48,7 @@ namespace {
     // Per-warp reduce
     #pragma unroll
     for (uint32_t i = 1; i < WARPSIZE; i *= 2) {
-      uint32_t t = __shfl_up(s, i);
+      uint32_t t = __shfl_up_sync(0xffffffffu, s, i);
       if (i <= lane) {
         s += t;
       }
@@ -115,7 +115,7 @@ namespace {
     // Per-warp reduce
     #pragma unroll
     for (uint32_t i = 1; i < WARPSIZE; i *= 2) {
-      uint32_t t = __shfl_up(s, i);
+      uint32_t t = __shfl_up_sync(0xffffffffu, s, i);
       if (i <= lane) {
         s += t;
       }
