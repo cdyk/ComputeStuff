@@ -424,13 +424,13 @@ int main(int argc, char** argv)
     translateMatrix(center, -0.5f, -0.5f, -0.5f);
 
     float rx[16];
-    rotMatrixX(rx, 1.1*seconds);
+    rotMatrixX(rx, static_cast<float>(1.1*seconds));
  
     float ry[16];
-    rotMatrixY(ry, 1.7*seconds);
+    rotMatrixY(ry, static_cast<float>(1.7*seconds));
 
     float rz[16];
-    rotMatrixZ(rz, 1.3*seconds);
+    rotMatrixZ(rz, static_cast<float>(1.3*seconds));
 
     float shift[16];
     translateMatrix(shift, 0.f, 0.f, -3.0f);
