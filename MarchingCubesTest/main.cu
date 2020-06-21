@@ -766,11 +766,84 @@ int main(int argc, char** argv)
   CHECKED_CUDA(cudaMalloc(&deviceMem, scalarField_host.size()));
   CHECKED_CUDA(cudaMemcpy(deviceMem, scalarField_host.data(), scalarField_host.size(), cudaMemcpyHostToDevice));
 
+  std::vector<uint8_t> counts(256, 0);
+  std::vector<uint8_t> mctable(256 * 16, 0xffu);
+
+  for (unsigned c = 0; c < 256; c++) {
+    // 0 -> 000 = 3
+    // 1 -> 001 = 0
+    // 2 -> 010 = 7
+    // 3 -> 011 = 4
+    // 4 -> 100 = 2
+    // 5 -> 101 = 1
+    // 6 -> 110 = 6
+    // 7 -> 111 = 5
+    //    3--------7
+    //   /|       /|
+    //  / |      / |
+    // 2--------6  |
+    // |  1-----|--5
+    // | /      | /   y x
+    // |/       |/    |/
+    // 0--------4     ->z
+    //    4--------5
+    //   /|       /|
+    //  / |      / |
+    // 7--------6  |
+    // |  0-----|--1
+    // | /      | /
+    // |/       |/
+    // 3--------2
+    unsigned n =
+      (((1 << 3) & c) ? (1 << 0) : 0) |
+      (((1 << 0) & c) ? (1 << 1) : 0) |
+      (((1 << 7) & c) ? (1 << 2) : 0) |
+      (((1 << 4) & c) ? (1 << 3) : 0) |
+      (((1 << 2) & c) ? (1 << 4) : 0) |
+      (((1 << 1) & c) ? (1 << 5) : 0) |
+      (((1 << 6) & c) ? (1 << 6) : 0) |
+      (((1 << 5) & c) ? (1 << 7) : 0);
+    unsigned i = 0;
+    for (; i < 16; i++) {
+      const auto t = triangles[c][i];
+      if (t < 0) break;
+
+      unsigned vv[8] = {
+        1,  // 0
+        5,  // 1
+        4,  // 2
+        0,  // 3
+        3,  // 4
+        7,  // 5
+        6,  // 6
+        2,  // 7
+      };
+      const unsigned e[12][2] = {
+        {0,1}, // 0
+        {2,1}, // 1
+        {3,2}, // 2
+        {3,0}, // 3
+        {4,5}, // 4
+        {5,6}, // 5
+        {6,7}, // 6
+        {7,4}, // 7
+        {0,4}, // 8
+        {1,5}, // 9
+        {2,6}, // 10
+        {3,7}  // 11
+      };
+      mctable[16 * n + i] = (vv[e[t][0]] << 3) | vv[e[t][1]];
+      if (i % 3 == 2) {
+        std::swap(mctable[16 * n + i - 1], mctable[16 * n + i]);
+      }
+    }
+    counts[n] = i;
+  }
 
   // reference code
   fprintf(stderr, "%d %zu\n", nx * ny * nz * 2, scalarField_host.size());
   assert(nx * ny * nz * 4 == scalarField_host.size());
-  const float threshold = 100.f;
+  const float threshold = 0.f;
   std::vector<float> vertices;
   const float* f = reinterpret_cast<const float*>(scalarField_host.data());
   for (unsigned k = 0; k + 1 < nz; k++) {
@@ -781,11 +854,24 @@ int main(int argc, char** argv)
           {0, 0, 1}, // 0
           {1, 0, 1}, // 1
           {1, 0, 0}, // 2
-          {0, 0, 0}, // 3
-          {0, 1, 1}, // 4
+          {0, 0, 0}, // 3 
+          {0, 1, 1}, // 4 
           {1, 1, 1}, // 5
           {1, 1, 0}, // 6
           {0, 1, 0}, // 7
+        };
+
+       
+
+        unsigned vv[8] = {
+          0b001,  // 0
+          0b101,  // 1
+          0b100,  // 2
+          0b000,  // 3
+          0b011,  // 4
+          0b111,  // 5
+          0b110,  // 6
+          0b010,  // 7
         };
         const unsigned e[12][2] = {
           {0,1}, // 0
@@ -802,24 +888,29 @@ int main(int argc, char** argv)
           {3,7}  // 11
         };
 
-        //    4--------5
-        //   /|       /|
-        //  / |      / |
-        // 7--------6  |
-        // |  0-----|--1
-        // | /      | /
-        // |/       |/
-        // 3--------2
 
-        //      +----4---+
-        //    7/|      5/|
-        //    / |8     / |9
-        //   +----6---+  |
-        //   |  +---0-|--+
-        // 11| /3   10| /1
-        //   |/       |/
-        //   +---2----+
 
+
+#if 1
+        unsigned mccase =
+          (f[((k + 0) * ny + (j + 0)) * nx + (i + 0)] < threshold ? (1 << 0) : 0) |
+          (f[((k + 0) * ny + (j + 0)) * nx + (i + 1)] < threshold ? (1 << 1) : 0) |
+          (f[((k + 0) * ny + (j + 1)) * nx + (i + 0)] < threshold ? (1 << 2) : 0) |
+          (f[((k + 0) * ny + (j + 1)) * nx + (i + 1)] < threshold ? (1 << 3) : 0) |
+          (f[((k + 1) * ny + (j + 0)) * nx + (i + 0)] < threshold ? (1 << 4) : 0) |
+          (f[((k + 1) * ny + (j + 0)) * nx + (i + 1)] < threshold ? (1 << 5) : 0) |
+          (f[((k + 1) * ny + (j + 1)) * nx + (i + 0)] < threshold ? (1 << 6) : 0) |
+          (f[((k + 1) * ny + (j + 1)) * nx + (i + 1)] < threshold ? (1 << 7) : 0);
+
+        const unsigned N = counts[mccase];
+        for (unsigned l = 0; l <N; l++) {
+          const auto r = mctable[16*mccase + l];
+
+          vertices.push_back((2 * i + ((r >> 3) & 1) + ((r >> 0) & 1)) / (2.f * nx));
+          vertices.push_back((2 * j + ((r >> 4) & 1) + ((r >> 1) & 1)) / (2.f * ny));
+          vertices.push_back((2 * k + ((r >> 5) & 1) + ((r >> 2) & 1)) / (2.f * nz));
+        }
+#else
         unsigned mccase =
           (f[((k + v[0][2]) * ny + (j + v[0][1])) * nx + (i + v[0][0])] < threshold ? (1 << 0) : 0) |
           (f[((k + v[1][2]) * ny + (j + v[1][1])) * nx + (i + v[1][0])] < threshold ? (1 << 1) : 0) |
@@ -829,7 +920,6 @@ int main(int argc, char** argv)
           (f[((k + v[5][2]) * ny + (j + v[5][1])) * nx + (i + v[5][0])] < threshold ? (1 << 5) : 0) |
           (f[((k + v[6][2]) * ny + (j + v[6][1])) * nx + (i + v[6][0])] < threshold ? (1 << 6) : 0) |
           (f[((k + v[7][2]) * ny + (j + v[7][1])) * nx + (i + v[7][0])] < threshold ? (1 << 7) : 0);
-
         for (unsigned l = 0; l < 15; l++) {
           const auto r = triangles[mccase][l];
           if (r < 0) break;
@@ -838,6 +928,7 @@ int main(int argc, char** argv)
           vertices.push_back((2 * j + v[e[r][0]][1] + v[e[r][1]][1]) / (2.f * ny));
           vertices.push_back((2 * k + v[e[r][0]][2] + v[e[r][1]][2]) / (2.f * nz));
         }
+#endif
       }
     }
   }
