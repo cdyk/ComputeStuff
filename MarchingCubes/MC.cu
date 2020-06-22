@@ -8,7 +8,6 @@ namespace {
   struct reduce_base_args
   {
     uint4* __restrict__ out_level0_d;
-    uint4* __restrict__ out_level1_d;
     uint32_t* __restrict__ out_sideband_d;
     const uint8_t* index_count;
     const FieldType* field_d;
@@ -108,29 +107,15 @@ namespace {
         uint5 cases = mergeY(mergeZ(prev, next));
         prev = next;
 
-        uint5 counts;
+        uint5 counts{
+          cell.y + 0u < arg.cells.y ? arg.index_count[cases.e0] : 0u,
+          cell.y + 1u < arg.cells.y ? arg.index_count[cases.e1] : 0u,
+          cell.y + 2u < arg.cells.y ? arg.index_count[cases.e2] : 0u,
+          cell.y + 3u < arg.cells.y ? arg.index_count[cases.e3] : 0u,
+          cell.y + 4u < arg.cells.y ? arg.index_count[cases.e4] : 0u,
+        };
 
-#if 1
-        counts.e0 = cell.y + 0 < arg.cells.y ? arg.index_count[cases.e0 & 0xffu] : 0;
-        counts.e1 = cell.y + 1 < arg.cells.y ? arg.index_count[cases.e1 & 0xffu] : 0;
-        counts.e2 = cell.y + 2 < arg.cells.y ? arg.index_count[cases.e2 & 0xffu] : 0;
-        counts.e3 = cell.y + 3 < arg.cells.y ? arg.index_count[cases.e3 & 0xffu] : 0;
-        counts.e4 = cell.y + 4 < arg.cells.y ? arg.index_count[cases.e4 & 0xffu] : 0;
-#else
-
-        cases.e0 &= 0xffu;
-        cases.e1 &= 0xffu;
-        cases.e2 &= 0xffu;
-        cases.e3 &= 0xffu;
-        cases.e4 &= 0xffu;
-
-        counts.e0 = (cell.y + 0 < arg.cells.y) ? ((cases.e0 != 0) && (cases.e0 != 255) ? 1 : 0) : 0;
-        counts.e1 = (cell.y + 1 < arg.cells.y) ? ((cases.e1 != 0) && (cases.e1 != 255) ? 1 : 0) : 0;
-        counts.e2 = (cell.y + 2 < arg.cells.y) ? ((cases.e2 != 0) && (cases.e2 != 255) ? 1 : 0) : 0;
-        counts.e3 = (cell.y + 3 < arg.cells.y) ? ((cases.e3 != 0) && (cases.e3 != 255) ? 1 : 0) : 0;
-        counts.e4 = (cell.y + 4 < arg.cells.y) ? ((cases.e4 != 0) && (cases.e4 != 255) ? 1 : 0) : 0;
-#endif
-        //out_level0_d[32 * 5 * blockIdx.x + 32 * y + thread] = make_uint4(count0, count1, count2, count3);
+        arg.out_level0_d[32 * 5 * blockIdx.x + 32 * y + thread] = make_uint4(cases.e0, cases.e1, cases.e2, cases.e3);
         sum = counts.e0 + counts.e1 + counts.e2 + counts.e3 + counts.e4;
       }
       cell.z++;
@@ -226,11 +211,10 @@ uint32_t ComputeStuff::MC::buildP3(Context* ctx,
 
   struct reduce_base_args<float> reduce_base_args{};
   reduce_base_args.out_level0_d = reinterpret_cast<uint4*>(ctx->buffer + ctx->level_offsets[ctx->levels - 1]);
-  reduce_base_args.out_level1_d = reinterpret_cast<uint4*>(ctx->buffer + ctx->level_offsets[ctx->levels - 2]);
   reduce_base_args.out_sideband_d = ctx->sidebands[0];
   reduce_base_args.index_count = ctx->tables->index_count;
   reduce_base_args.field_d = field_d;
-  reduce_base_args.field_end_d = field_d + 10000000000000 + size_t(field_size.x) * field_size.y * field_size.z;
+  reduce_base_args.field_end_d = field_d + size_t(field_size.x) * field_size.y * field_size.z;
   reduce_base_args.field_row_stride = size_t(field_size.x);
   reduce_base_args.field_slice_stride = size_t(field_size.x) * field_size.y;
   reduce_base_args.threshold = threshold;
