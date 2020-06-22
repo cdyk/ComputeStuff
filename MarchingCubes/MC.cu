@@ -102,7 +102,7 @@ namespace {
       bool zmask = cell.z < arg.cells.z;
       if (xmask && zmask) {
 
-        uint6 next = fetch(ptr, arg.field_end_d, arg.field_slice_stride, arg.threshold);
+        uint6 next = fetch(ptr, arg.field_end_d, arg.field_row_stride, arg.threshold);
         ptr += arg.field_slice_stride;
 
         uint5 cases = mergeY(mergeZ(prev, next));
@@ -110,7 +110,7 @@ namespace {
 
         uint5 counts;
 
-#if 0
+#if 1
         counts.e0 = cell.y + 0 < arg.cells.y ? arg.index_count[cases.e0 & 0xffu] : 0;
         counts.e1 = cell.y + 1 < arg.cells.y ? arg.index_count[cases.e1 & 0xffu] : 0;
         counts.e2 = cell.y + 2 < arg.cells.y ? arg.index_count[cases.e2 & 0xffu] : 0;
@@ -124,11 +124,11 @@ namespace {
         cases.e3 &= 0xffu;
         cases.e4 &= 0xffu;
 
-        counts.e0 = (cell.y + 0 < arg.cells.y) ? ((cases.e0 != 0) && (cases.e0 != 255) ? 1 : 1) : 0;
-        counts.e1 = (cell.y + 1 < arg.cells.y) ? ((cases.e1 != 0) && (cases.e1 != 255) ? 1 : 1) : 0;
-        counts.e2 = (cell.y + 2 < arg.cells.y) ? ((cases.e2 != 0) && (cases.e2 != 255) ? 1 : 1) : 0;
-        counts.e3 = (cell.y + 3 < arg.cells.y) ? ((cases.e3 != 0) && (cases.e3 != 255) ? 1 : 1) : 0;
-        counts.e4 = (cell.y + 4 < arg.cells.y) ? ((cases.e4 != 0) && (cases.e4 != 255) ? 1 : 1) : 0;
+        counts.e0 = (cell.y + 0 < arg.cells.y) ? ((cases.e0 != 0) && (cases.e0 != 255) ? 1 : 0) : 0;
+        counts.e1 = (cell.y + 1 < arg.cells.y) ? ((cases.e1 != 0) && (cases.e1 != 255) ? 1 : 0) : 0;
+        counts.e2 = (cell.y + 2 < arg.cells.y) ? ((cases.e2 != 0) && (cases.e2 != 255) ? 1 : 0) : 0;
+        counts.e3 = (cell.y + 3 < arg.cells.y) ? ((cases.e3 != 0) && (cases.e3 != 255) ? 1 : 0) : 0;
+        counts.e4 = (cell.y + 4 < arg.cells.y) ? ((cases.e4 != 0) && (cases.e4 != 255) ? 1 : 0) : 0;
 #endif
         //out_level0_d[32 * 5 * blockIdx.x + 32 * y + thread] = make_uint4(count0, count1, count2, count3);
         sum = counts.e0 + counts.e1 + counts.e2 + counts.e3 + counts.e4;
