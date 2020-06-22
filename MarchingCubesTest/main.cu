@@ -39,7 +39,7 @@ namespace {
   // only one of the bits 0, 1, and 2 is set. Another invariant is that a
   // valid edge index is never zero.
   //
-  const uint8_t mc_index_count[256] = {
+  const uint8_t index_count[256] = {
     0, 3, 3, 6, 3, 6, 6, 9, 3, 6, 6, 9, 6, 9, 9, 6,
     3, 6, 6, 9, 6, 9, 9, 12, 6, 9, 9, 12, 9, 12, 12, 9,
     3, 6, 6, 9, 6, 9, 9, 12, 6, 9, 9, 12, 9, 12, 12, 9,
@@ -771,6 +771,7 @@ int main(int argc, char** argv)
   cudaSetDevice(deviceIndex);
   CHECKED_CUDA(cudaStreamCreate(&stream));
 
+  path = "cayley";
 
   // Set up scalar field
   if (!path) {
@@ -784,13 +785,14 @@ int main(int argc, char** argv)
     return EXIT_FAILURE;
   }
   fprintf(stderr, "Scalar field is [%d x %d x %d] (%d cells total)\n", nx, ny, nz, nx * ny * nz);
-  void* deviceMem = nullptr;
+  float* deviceMem = nullptr;
   CHECKED_CUDA(cudaMalloc(&deviceMem, scalarField_host.size()));
-  CHECKED_CUDA(cudaMemcpy(deviceMem, scalarField_host.data(), scalarField_host.size(), cudaMemcpyHostToDevice));
+  CHECKED_CUDA(cudaMemcpyAsync(deviceMem, scalarField_host.data(), scalarField_host.size(), cudaMemcpyHostToDevice, stream));
 
   assert(nx * ny * nz * 4 == scalarField_host.size());
   const float threshold = 0.f;
   std::vector<float> vertices;
+  unsigned populated = 0;
   const float* f = reinterpret_cast<const float*>(scalarField_host.data());
   for (unsigned k = 0; k + 1 < nz; k++) {
     for (unsigned j = 0; j + 1 < ny; j++) {
@@ -805,7 +807,11 @@ int main(int argc, char** argv)
           (f[((k + 1) * ny + (j + 1)) * nx + (i + 0)] < threshold ? (1 << 6) : 0) |
           (f[((k + 1) * ny + (j + 1)) * nx + (i + 1)] < threshold ? (1 << 7) : 0);
 
-        const unsigned N = mc_index_count[mccase];
+        if (mccase != 0 && mccase != 255) {
+          populated++;
+        }
+
+        const unsigned N = index_count[mccase];
         for (unsigned l = 0; l <N; l++) {
           const auto r = mc_triangles[16*mccase + l];
 
@@ -816,14 +822,20 @@ int main(int argc, char** argv)
       }
     }
   }
-  fprintf(stderr, "trianglecount %zu\n", vertices.size() / 3);
+  fprintf(stderr, "indexcount %zu, populated=%u of %u\n", vertices.size() / 3, populated, (nx - 1)* (ny - 1)* (nz - 1));
 
 
 
 
   auto* tables = createTables(stream);
-  auto* pyramid = createHistoPyramid(stream, tables, nx, ny, nz);
+  auto* ctx = createContext(tables, make_uint3(nx-1, ny-1, nz-1), stream);
 
+  ComputeStuff::MC::buildP3(ctx,
+                            make_uint3(0, 0, 0),
+                            make_uint3(nx, ny, nz),
+                            deviceMem,
+                            threshold,
+                            stream);
 
   GLuint simpleVS = createShader(simpleVS_src, GL_VERTEX_SHADER);
   assert(simpleVS != 0);
@@ -865,7 +877,7 @@ int main(int argc, char** argv)
     default: break;
     }
 
-    buildHistoPyramid(stream, pyramid, iso);
+    //buildHistoPyramid(stream, pyramid, iso);
 
     glViewport(0, 0, width, height);
 

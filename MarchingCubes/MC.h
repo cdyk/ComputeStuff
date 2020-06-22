@@ -1,4 +1,5 @@
 #pragma once
+#include <vector>
 #include <cstdint>
 #include <cuda_runtime.h>
 
@@ -14,15 +15,40 @@ namespace ComputeStuff {
       Float
     };
 
-    struct Tables;
+    struct Tables
+    {
+      const uint8_t* index_count = nullptr;
+      const uint8_t* index_table = nullptr;
 
-    struct HistoPyramid;
+    };
 
-    Tables* createTables(cudaStream_t streaam);
+    struct Context
+    {
+      const Tables* tables = nullptr;
+      uint32_t* buffer = nullptr;
+      uint32_t* sidebands[2] = { nullptr, nullptr };
+      uint3 cells;
+      uint3 chunks;
+      uint32_t levels = 0;
+      uint32_t level_sizes[32];
+      uint32_t level_offsets[32];
+      uint32_t total_size;
+    };
 
-    HistoPyramid* createHistoPyramid(cudaStream_t stream, Tables* tables, uint32_t nx, uint32_t ny, uint32_t nz);
+    Tables* createTables(cudaStream_t stream);
 
-    void buildHistoPyramid(cudaStream_t stream, HistoPyramid* hp, float iso);
+    Context* createContext(const Tables* tables,
+                           uint3 cells,
+                           cudaStream_t stream);
+
+    uint32_t buildP3(Context* ctx,
+                     uint3 offset,
+                     uint3 field_size,
+                     const float* field,
+                     const float threshold,
+                     cudaStream_t stream);
+
+    void destroyContext(Context* ctx);
 
   }
 }
