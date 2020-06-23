@@ -80,6 +80,8 @@ namespace {
                             5 * chunk.y,
                             5 * chunk.z);
 
+    // TODO check if it is faster to only process 31 cells and don't rely on cache for fetching field.
+
     // One warp processes a 32 * 5 * 5 chunk, outputs 800 mc cases to base level and 800/5=160 sums to sideband.
     const FieldType* ptr = field_d
                          + cell.z * field_slice_stride
@@ -117,7 +119,10 @@ namespace {
         cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 2] = cases.e2;
         cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 3] = cases.e3;
         cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 4] = cases.e4;
-        out_level0_d[32 * 5 * blockIdx.x + 32 * y + thread] = make_uint4(cases.e0, cases.e1, cases.e2, cases.e3);
+        out_level0_d[32 * 5 * blockIdx.x + 32 * y + thread] = make_uint4(counts.e0,
+                                                                         counts.e0 + counts.e1,
+                                                                         counts.e0 + counts.e1 + counts.e2,
+                                                                         counts.e0 + counts.e1 + counts.e2 + counts.e3);
       }
       cell.z++;
       out_sideband_d[32 * (5 * blockIdx.x + y) + threadIdx.x] = sum;// t.x + t.y + t.z + t.w + sideband[5 * thread + 4];
@@ -146,7 +151,10 @@ namespace {
                               sb[5 * threadIdx.x + 1],
                               sb[5 * threadIdx.x + 2],
                               sb[5 * threadIdx.x + 3]);
-        hp1_d[offset1] = hp;
+        hp1_d[offset1] = make_uint4(hp.x,
+                                    hp.x + hp.y,
+                                    hp.x + hp.y + hp.z,
+                                    hp.x + hp.y + hp.z + hp.w);
         sb1_d[offset1] = hp.x + hp.y + hp.z + hp.w + sb[5 * threadIdx.x + 4];
       }
     }
@@ -221,22 +229,75 @@ namespace {
   }
 
 
-  __global__ void extractP(float* __restrict__        output,
-                           uint32_t                   output_count,
-                           const uint4* __restrict__  pyramid)
-  {
-    uint32_t ix = blockDim.x * blockIdx.x + threadIdx.x;
-    float t = (10.f * ix) / output_count;
 
-    output[3 * ix + 0] = 0.5f + 0.5f * cos(t);
-    output[3 * ix + 1] = 0.5f + 0.5f * cos(3.2*t);
-    output[3 * ix + 2] = 0.5f + 0.5f * cos(2.7*t);
+  __device__ __forceinline__ uint32_t processHP5Item(uint32_t& key, uint32_t offset, const uint4 item)
+  {
+    if (key < item.x) {
+    }
+    else if (key < item.y) {
+      key -= item.x;
+      offset += 1;
+    }
+    else if (key < item.z) {
+      key -= item.y;
+      offset += 2;
+    }
+    else if (key < item.w) {
+      key -= item.z;
+      offset += 3;
+    }
+    else {
+      key -= item.w;
+      offset += 4;
+    }
+    return offset;
+  }
+
+  __global__ void extractP(float* __restrict__        output,
+                           const uint32_t             output_count,
+                           const uint4* __restrict__  pyramid,
+                           const uint2                chunks,
+                           const float3               scale)
+  {
+    const uint32_t* level_offset = (const uint32_t*)(pyramid);
+    const uint32_t level_count = level_offset[31];
+
+    uint32_t ix = blockDim.x * blockIdx.x + threadIdx.x;
+    if (ix < output_count) {
+      uint32_t key = ix;
+      // Traverse apex
+      uint32_t offset = 0;
+      offset = processHP5Item(key, 0, pyramid[9]);
+      offset = processHP5Item(key, 5*offset, pyramid[10 + offset]);
+      offset = processHP5Item(key, 5*offset, pyramid[15 + offset]);
+      for (unsigned l = level_count - 4; l < level_count; l--) {
+        offset = processHP5Item(key, 5 * offset, pyramid[level_offset[l] + offset]);
+      }
+
+      uint32_t q = offset / 800;
+
+      uint3 chunk = make_uint3(q % chunks.x,
+                               (q / chunks.x) % chunks.y,
+                               (q / chunks.x) / chunks.y);
+
+      uint32_t r = offset % 800;
+      uint3 cell = make_uint3(32 * chunk.x + ((r/5) % 32),
+                              5 * chunk.y + ((r % 5)),
+                              5 * chunk.z + ((r / 5) / 32));
+
+
+      output[3 * ix + 0] = scale.x * cell.x;
+      output[3 * ix + 1] = scale.y * cell.y;
+      output[3 * ix + 2] = scale.z * cell.z;
+    }
   }
 
 
   __global__ void runExtractionP(float* __restrict__        output,
-                                 uint32_t                   output_count,
-                                 const uint4* __restrict__  pyramid)
+                                 const uint32_t             output_count,
+                                 const uint4* __restrict__  pyramid,
+                                 const uint2                chunks,
+                                 const float3               scale)
   {
     if (threadIdx.x == 0) {
       uint32_t index_count = min(output_count, pyramid[8].x);
@@ -245,7 +306,7 @@ namespace {
       }
       printf("CUDA %d\n", index_count);
       if (index_count) {
-        extractP<<<(index_count + 255) / 256, 256>>>(output, index_count, pyramid);
+        extractP<<<(index_count + 255) / 256, 256>>>(output, index_count, pyramid, chunks, scale);
       }
     }
   }
@@ -422,7 +483,11 @@ uint32_t ComputeStuff::MC::buildP3(Context* ctx,
   if (output_buffer) {
     ::runExtractionP<<<1, 32, 0, stream>>>(reinterpret_cast<float*>(output_buffer),
                                            static_cast<uint32_t>(output_buffer_size / (3 * sizeof(float))),
-                                           ctx->pyramid);
+                                           ctx->pyramid,
+                                           make_uint2(ctx->chunks.x, ctx->chunks.y),
+                                           make_float3(1.f/ctx->cells.x,
+                                                       1.f/ctx->cells.y,
+                                                       1.f/ctx->cells.z));
   }
 
   assert(output_buffer);
