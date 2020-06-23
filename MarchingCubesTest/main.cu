@@ -1,6 +1,7 @@
 #include <cuda_runtime_api.h>
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
+#include <cuda_gl_interop.h>
 
 #include <cmath>
 #include <cassert>
@@ -753,18 +754,26 @@ int main(int argc, char** argv)
   glfwMakeContextCurrent(win);
   gladLoadGL(glfwGetProcAddress);
 
-  int deviceCount;
-  cudaGetDeviceCount(&deviceCount);
+  unsigned int deviceCount;
+  CHECKED_CUDA(cudaGLGetDevices(&deviceCount, nullptr, 0, cudaGLDeviceListAll));
   if (deviceCount == 0) {
     fprintf(stderr, "No CUDA-enabled devices available.");
     return EXIT_FAILURE;
   }
-  for (int i = 0; i < deviceCount; i++) {
+  std::vector<int> devices(deviceCount);
+  CHECKED_CUDA(cudaGLGetDevices(&deviceCount, devices.data(), deviceCount, cudaGLDeviceListAll));
+
+  bool found = false;
+  for (unsigned k = 0; k < deviceCount; k++) {
+    int i = devices[k];
     cudaDeviceProp dev_prop;
     cudaGetDeviceProperties(&dev_prop, i);
     fprintf(stderr, "%c[%i] %s cap=%d.%d\n", i == deviceIndex ? '*' : ' ', i, dev_prop.name, dev_prop.major, dev_prop.minor);
+    if (i == deviceIndex) {
+      found = true;
+    }
   }
-  if (deviceIndex < 0 || deviceCount <= deviceIndex) {
+  if (!found) {
     fprintf(stderr, "Illegal CUDA device index %d\n", deviceIndex);
     return EXIT_FAILURE;
   }
@@ -861,6 +870,23 @@ int main(int argc, char** argv)
   glEnableVertexAttribArray(0);
 //  glEnableVertexAttribArray(1);
 
+  GLuint cudaBuf = createBuffer(GL_ARRAY_BUFFER, GL_STATIC_DRAW, sizeof(float) * vertices.size(), nullptr);
+
+  cudaGraphicsResource* bufferResource = nullptr;
+  CHECKED_CUDA(cudaGraphicsGLRegisterBuffer(&bufferResource, cudaBuf, cudaGraphicsRegisterFlagsWriteDiscard));
+
+  GLuint cudaVbo = 0;
+  glGenVertexArrays(1, &cudaVbo);
+  glBindVertexArray(cudaVbo);
+  glBindBuffer(GL_ARRAY_BUFFER, cudaBuf);
+  glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(float) * 3, nullptr);
+  //  glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(float) * 6, (void*)(sizeof(float) * 3));
+  glEnableVertexAttribArray(0);
+  //  glEnableVertexAttribArray(1);
+
+  cudaGraphicsMapResources(1, &bufferResource, stream);
+
+  cudaGraphicsUnmapResources(1, &bufferResource, stream);
 
   auto start = std::chrono::system_clock::now();
   while (!glfwWindowShouldClose(win)) {
@@ -919,6 +945,7 @@ int main(int argc, char** argv)
     float frustum_shift_rz_ry_rx[16];
     matrixMul4(frustum_shift_rz_ry_rx, frustum, shift_rz_ry_rx);
 
+#if 0
     glEnable(GL_CULL_FACE);
     glEnable(GL_DEPTH_TEST);
     glUseProgram(simplePrg);
@@ -952,6 +979,14 @@ int main(int argc, char** argv)
 
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
     CHECK_GL;
+
+#endif
+    glUseProgram(simplePrg);
+    glBindVertexArray(cudaVbo);
+    glUniformMatrix4fv(0, 1, GL_FALSE, rz_ry_rx);
+    glUniformMatrix4fv(1, 1, GL_FALSE, frustum_shift_rz_ry_rx);
+    glUniform4f(2, 1.f, 1.f, 1.f, 1.f);
+    glDrawArrays(GL_POINTS, 0, N);
 
 
     glfwSwapBuffers(win);
