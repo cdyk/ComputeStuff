@@ -221,6 +221,32 @@ namespace {
   }
 
 
+  __global__ void extractP(float* __restrict__        output,
+                           uint32_t                   output_count,
+                           const uint4* __restrict__  pyramid)
+  {
+    uint32_t ix = blockDim.x * blockIdx.x + threadIdx.x;
+    float t = (10.f * ix) / output_count;
+
+    output[3 * ix + 0] = 0.5f + 0.5f * cos(t);
+    output[3 * ix + 1] = 0.5f + 0.5f * cos(3.2*t);
+    output[3 * ix + 2] = 0.5f + 0.5f * cos(2.7*t);
+  }
+
+
+  __global__ void runExtractionP(float* __restrict__        output,
+                                 uint32_t                   output_count,
+                                 const uint4* __restrict__  pyramid)
+  {
+    if (threadIdx.x == 0) {
+      uint32_t index_count = min(output_count, pyramid[0].x);
+      if (index_count) {
+        extractP<<<(index_count + 255) / 256, 256>>>(output, index_count, pyramid);
+      }
+    }
+  }
+
+
 #define CHECKED_CUDA(a) do { cudaError_t error = (a); if(error != cudaSuccess) handleCudaError(error, __FILE__, __LINE__); } while(0)
   [[noreturn]]
   void handleCudaError(cudaError_t error, const char* file, int line)
@@ -388,6 +414,14 @@ uint32_t ComputeStuff::MC::buildP3(Context* ctx,
                                      ctx->sum_d,
                                      ctx->sidebands[sb ? 0 : 1],
                                      ctx->level_sizes[ctx->levels - 4]);
+
+  if (output_buffer) {
+    ::runExtractionP<<<1, 32, 0, stream>>>(reinterpret_cast<float*>(output_buffer),
+                                           static_cast<uint32_t>(output_buffer_size / (3 * sizeof(float))),
+                                           ctx->pyramid);
+  }
+
+  assert(output_buffer);
 
   CHECKED_CUDA(cudaStreamSynchronize(stream));
   fprintf(stderr, "final sum: %u\n", *ctx->sum_h);
