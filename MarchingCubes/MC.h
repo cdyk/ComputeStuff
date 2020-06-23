@@ -50,6 +50,8 @@ namespace ComputeStuff {
                            cudaStream_t stream);
 
     uint32_t buildP3(Context* ctx,
+                     void* output_buffer,
+                     size_t output_buffer_size,
                      uint3 offset,
                      uint3 field_size,
                      const float* field,

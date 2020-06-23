@@ -318,6 +318,8 @@ void ComputeStuff::MC::destroyContext(Context* ctx)
 }
 
 uint32_t ComputeStuff::MC::buildP3(Context* ctx,
+                                   void* output_buffer,
+                                   size_t output_buffer_size,
                                    uint3 offset,
                                    uint3 field_size,
                                    const float* field_d,

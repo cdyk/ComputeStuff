@@ -839,12 +839,7 @@ int main(int argc, char** argv)
   auto* tables = createTables(stream);
   auto* ctx = createContext(tables, make_uint3(nx-1, ny-1, nz-1), stream);
 
-  ComputeStuff::MC::buildP3(ctx,
-                            make_uint3(0, 0, 0),
-                            make_uint3(nx, ny, nz),
-                            deviceMem,
-                            threshold,
-                            stream);
+  
 
   GLuint simpleVS = createShader(simpleVS_src, GL_VERTEX_SHADER);
   assert(simpleVS != 0);
@@ -885,6 +880,19 @@ int main(int argc, char** argv)
   //  glEnableVertexAttribArray(1);
 
   cudaGraphicsMapResources(1, &bufferResource, stream);
+
+  void* cudaBuf_d;
+  size_t cudaBuf_size;
+  CHECKED_CUDA(cudaGraphicsResourceGetMappedPointer(&cudaBuf_d, &cudaBuf_size, bufferResource));
+  ComputeStuff::MC::buildP3(ctx,
+                            cudaBuf_d,
+                            cudaBuf_size,
+                            make_uint3(0, 0, 0),
+                            make_uint3(nx, ny, nz),
+                            deviceMem,
+                            threshold,
+                            stream);
+
 
   cudaGraphicsUnmapResources(1, &bufferResource, stream);
 
