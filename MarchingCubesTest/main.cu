@@ -319,9 +319,9 @@ namespace {
   };
 
   FieldFormat format = FieldFormat::Float;
-  uint32_t nx = 50;
-  uint32_t ny = 50;
-  uint32_t nz = 50;
+  uint32_t nx = 128;
+  uint32_t ny = 128;
+  uint32_t nz = 128;
 
   std::vector<char> scalarField_host;
 
@@ -865,8 +865,16 @@ int main(int argc, char** argv)
   glEnableVertexAttribArray(0);
 //  glEnableVertexAttribArray(1);
 
-  GLuint cudaBuf = createBuffer(GL_ARRAY_BUFFER, GL_STATIC_DRAW, sizeof(float) * vertices.size(), nullptr);
 
+
+  unsigned eventCounter = 0;
+  cudaEvent_t events[2 * 4];
+  for (size_t i = 0; i < 2 * 4; i++) {
+    CHECKED_CUDA(cudaEventCreate(&events[i]));
+    CHECKED_CUDA(cudaEventRecord(events[i], stream));
+  }
+
+  GLuint cudaBuf = createBuffer(GL_ARRAY_BUFFER, GL_STREAM_DRAW, 3 * sizeof(float), nullptr);
   cudaGraphicsResource* bufferResource = nullptr;
   CHECKED_CUDA(cudaGraphicsGLRegisterBuffer(&bufferResource, cudaBuf, cudaGraphicsRegisterFlagsWriteDiscard));
 
@@ -879,24 +887,11 @@ int main(int argc, char** argv)
   glEnableVertexAttribArray(0);
   //  glEnableVertexAttribArray(1);
 
-  cudaGraphicsMapResources(1, &bufferResource, stream);
-
-  void* cudaBuf_d;
-  size_t cudaBuf_size;
-  CHECKED_CUDA(cudaGraphicsResourceGetMappedPointer(&cudaBuf_d, &cudaBuf_size, bufferResource));
-  ComputeStuff::MC::buildP3(ctx,
-                            cudaBuf_d,
-                            cudaBuf_size,
-                            make_uint3(0, 0, 0),
-                            make_uint3(nx, ny, nz),
-                            deviceMem,
-                            threshold,
-                            stream);
-
-
-  cudaGraphicsUnmapResources(1, &bufferResource, stream);
 
   auto start = std::chrono::system_clock::now();
+  auto timer = std::chrono::high_resolution_clock::now();
+  float cuda_ms = 0.f;
+  unsigned frames = 0;
   while (!glfwWindowShouldClose(win)) {
     int width, height;
     glfwGetWindowSize(win, &width, &height);
@@ -911,8 +906,58 @@ int main(int argc, char** argv)
     default: break;
     }
 
-    //buildHistoPyramid(stream, pyramid, iso);
 
+    uint32_t vertices = 0;
+    uint32_t indices = 0;
+    {
+      void* cudaBuf_d = nullptr;
+      size_t cudaBuf_size = 0;
+
+      CHECKED_CUDA(cudaGraphicsMapResources(1, &bufferResource, stream));
+      CHECKED_CUDA(cudaGraphicsResourceGetMappedPointer(&cudaBuf_d, &cudaBuf_size, bufferResource));
+      CHECKED_CUDA(cudaEventRecord(events[2 * eventCounter + 0], stream));
+      ComputeStuff::MC::buildP3(ctx,
+                                cudaBuf_d,
+                                cudaBuf_size,
+                                make_uint3(0, 0, 0),
+                                make_uint3(nx, ny, nz),
+                                deviceMem,
+                                threshold,
+                                stream);
+      CHECKED_CUDA(cudaEventRecord(events[2 * eventCounter + 1], stream));
+      CHECKED_CUDA(cudaGraphicsUnmapResources(1, &bufferResource, stream));
+      ComputeStuff::MC::getCounts(ctx, &vertices, &indices);
+
+      eventCounter = (eventCounter + 1) & 3;
+      float ms = 0;
+      CHECKED_CUDA(cudaEventElapsedTime(&ms, events[2 * eventCounter + 0], events[2 * eventCounter + 1]));
+      cuda_ms += ms;
+
+      if (cudaBuf_size < 3 * sizeof(float) * vertices) {
+
+        CHECKED_CUDA(cudaGraphicsUnregisterResource(bufferResource));
+
+        size_t newSize = 3 * sizeof(float) * (static_cast<size_t>(vertices) + vertices / 16);
+        fprintf(stderr, "Resizing VBO to %zu bytes\n", newSize);
+        glBindBuffer(GL_ARRAY_BUFFER, cudaBuf);
+        glBufferData(GL_ARRAY_BUFFER, newSize, nullptr, GL_STREAM_DRAW);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+        CHECKED_CUDA(cudaGraphicsGLRegisterBuffer(&bufferResource, cudaBuf, cudaGraphicsRegisterFlagsWriteDiscard));
+
+        CHECKED_CUDA(cudaGraphicsMapResources(1, &bufferResource, stream));
+        CHECKED_CUDA(cudaGraphicsResourceGetMappedPointer(&cudaBuf_d, &cudaBuf_size, bufferResource));
+        ComputeStuff::MC::buildP3(ctx,
+                                  cudaBuf_d,
+                                  cudaBuf_size,
+                                  make_uint3(0, 0, 0),
+                                  make_uint3(nx, ny, nz),
+                                  deviceMem,
+                                  threshold,
+                                  stream);
+        CHECKED_CUDA(cudaGraphicsUnmapResources(1, &bufferResource, stream));
+      }
+    }
     glViewport(0, 0, width, height);
 
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -999,6 +1044,24 @@ int main(int argc, char** argv)
 
     glfwSwapBuffers(win);
     glfwPollEvents();
+
+    {
+      frames++;
+      auto now = std::chrono::high_resolution_clock::now();
+      std::chrono::duration<double> elapsed = now - timer;
+      auto s = elapsed.count();
+      if (10 < frames && 1.0 < s) {
+        fprintf(stderr, "%.2f FPS (%.2f MVPS) cuda avg: %.2fms (%.2f MVPS) %ux%ux%u\n",
+                frames / s, (frames* nx *ny * nz) / (1000000 * s),
+                cuda_ms/frames, (frames* nx* ny* nz) / (1000 * cuda_ms),
+                nx, ny, nz);
+        timer = now;
+        frames = 0;
+        cuda_ms = 0.f;
+      }
+    }
+
+
   }
   glfwDestroyWindow(win);
   glfwTerminate();

@@ -19,7 +19,6 @@ namespace ComputeStuff {
     {
       const uint8_t* index_count = nullptr;
       const uint8_t* index_table = nullptr;
-
     };
 
     struct Context
@@ -41,7 +40,10 @@ namespace ComputeStuff {
       uint32_t level_sizes[32];   // nunber of uvec4's
       uint32_t level_offsets[32]; // offsets in uvec4's
       uint32_t total_size;
+      cudaEvent_t countWritten;
     };
+
+    void getCounts(Context* ctx, uint32_t* vertices, uint32_t* indices);
 
     Tables* createTables(cudaStream_t stream);
 
@@ -49,14 +51,14 @@ namespace ComputeStuff {
                            uint3 cells,
                            cudaStream_t stream);
 
-    uint32_t buildP3(Context* ctx,
-                     void* output_buffer,
-                     size_t output_buffer_size,
-                     uint3 offset,
-                     uint3 field_size,
-                     const float* field,
-                     const float threshold,
-                     cudaStream_t stream);
+    void buildP3(Context* ctx,
+                 void* output_buffer,
+                 size_t output_buffer_size,
+                 uint3 offset,
+                 uint3 field_size,
+                 const float* field,
+                 const float threshold,
+                 cudaStream_t stream);
 
     void destroyContext(Context* ctx);
 

@@ -301,10 +301,6 @@ namespace {
   {
     if (threadIdx.x == 0) {
       uint32_t index_count = min(output_count, pyramid[8].x);
-      for (unsigned i = 0; i < 32; i++) {
-        printf("%d: %8d\n", i, ((uint32_t*)pyramid)[i]);
-      }
-      printf("CUDA %d\n", index_count);
       if (index_count) {
         extractP<<<(index_count + 255) / 256, 256>>>(output, index_count, pyramid, chunks, scale);
       }
@@ -399,6 +395,7 @@ ComputeStuff::MC::Context* ComputeStuff::MC::createContext(const Tables* tables,
   CHECKED_CUDA(cudaHostAlloc(&ctx->sum_h, sizeof(uint32_t), cudaHostAllocMapped));
   CHECKED_CUDA(cudaHostGetDevicePointer(&ctx->sum_d, ctx->sum_h, 0));
 
+  CHECKED_CUDA(cudaEventCreateWithFlags(&ctx->countWritten, cudaEventBlockingSync));
 
   return ctx;
 }
@@ -408,21 +405,23 @@ void ComputeStuff::MC::destroyContext(Context* ctx)
   delete ctx;
 }
 
-uint32_t ComputeStuff::MC::buildP3(Context* ctx,
-                                   void* output_buffer,
-                                   size_t output_buffer_size,
-                                   uint3 offset,
-                                   uint3 field_size,
-                                   const float* field_d,
-                                   const float threshold,
-                                   cudaStream_t stream)
+void ComputeStuff::MC::getCounts(Context* ctx, uint32_t* vertices, uint32_t* indices)
 {
+  CHECKED_CUDA(cudaEventSynchronize(ctx->countWritten));
+  *vertices = *ctx->sum_h;
+}
 
 
+void ComputeStuff::MC::buildP3(Context* ctx,
+                               void* output_buffer,
+                               size_t output_buffer_size,
+                               uint3 offset,
+                               uint3 field_size,
+                               const float* field_d,
+                               const float threshold,
+                               cudaStream_t stream)
+{
   const unsigned chunks = ctx->chunk_total;
-  fprintf(stderr, "chunks=%d, threads=%d\n", chunks, chunks * 32);
-  fprintf(stderr, "moo=%u\n", (32 * 5 * 5 * chunks) / 4);
-  fprintf(stderr, "moo=%u\n", 32 * 5 * chunks);
   ::reduce_base<float><<<chunks, 32, 0, stream>>>(ctx->cases,                           // block writes 5*5*32=800 uint8's
                                                   ctx->pyramid + ctx->level_offsets[0], // block writes 5*32 uvec4's
                                                   ctx->sidebands[0],                    // block writes 5*32 uint32's
@@ -434,51 +433,22 @@ uint32_t ComputeStuff::MC::buildP3(Context* ctx,
                                                   threshold,
                                                   ctx->chunks,
                                                   ctx->cells);
-  CHECKED_CUDA(cudaStreamSynchronize(stream));
-  std::vector<uint32_t> tmp(ctx->level_sizes[0]);
-  CHECKED_CUDA(cudaMemcpyAsync(tmp.data(), ctx->sidebands[0], sizeof(uint32_t) * tmp.size(), cudaMemcpyDeviceToHost, stream));
-  CHECKED_CUDA(cudaStreamSynchronize(stream));
-
-  unsigned sum = 0;
-  for (auto& item : tmp) {
-    sum += item;
-  }
-  fprintf(stderr, "sum = %d\n", sum);
-
-  // Reduction: 
-  // Input: level[i-1] elements
-  // Output: 4*(N/5) into pyramid
-  //            N/5  into 
-
 
   bool sb = true;
   for (unsigned i = 1; i < ctx->levels - 3; i++) {
-
-
-    // Reads 160 values, outputs HP level of 128 values, and 32 sideband values.
     const auto blocks = (ctx->level_sizes[i] + 31) / 32;
     reduce1<<<blocks, 5*32, 0, stream>>>(ctx->pyramid + ctx->level_offsets[i], // Each block will write 32 uvec4's into this
                                          ctx->sidebands[sb ? 1 : 0],           // Each block will write 32 uint32's into this
                                          ctx->level_sizes[i],                  // Number of uvec4's in level i
                                          ctx->sidebands[sb ? 0 : 1],           // Input, each block will read 5*32=160 values from here
                                          ctx->level_sizes[i-1]);               // Number of sideband elements from level i-1
-    CHECKED_CUDA(cudaStreamSynchronize(stream));
-
-    std::vector<uint32_t> tmp(ctx->level_sizes[i]);
-    CHECKED_CUDA(cudaMemcpyAsync(tmp.data(), ctx->sidebands[sb ? 1 : 0], sizeof(uint32_t) * tmp.size(), cudaMemcpyDeviceToHost, stream));
-    CHECKED_CUDA(cudaStreamSynchronize(stream));
-
-    unsigned sum = 0;
-    for (auto& item : tmp) {
-      sum += item;
-    }
-    fprintf(stderr, "%u sum = %d\n", i, sum);
     sb = !sb;
   }
   reduceApex<<<1, 4*32, 0, stream>>>(ctx->pyramid + 8,
                                      ctx->sum_d,
                                      ctx->sidebands[sb ? 0 : 1],
                                      ctx->level_sizes[ctx->levels - 4]);
+  CHECKED_CUDA(cudaEventRecord(ctx->countWritten, stream));
 
   if (output_buffer) {
     ::runExtractionP<<<1, 32, 0, stream>>>(reinterpret_cast<float*>(output_buffer),
@@ -489,12 +459,5 @@ uint32_t ComputeStuff::MC::buildP3(Context* ctx,
                                                        1.f/ctx->cells.y,
                                                        1.f/ctx->cells.z));
   }
-
-  assert(output_buffer);
-
-  CHECKED_CUDA(cudaStreamSynchronize(stream));
-  fprintf(stderr, "final sum: %u\n", *ctx->sum_h);
-
-  return 0;
 }
 
