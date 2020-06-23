@@ -319,9 +319,9 @@ namespace {
   };
 
   FieldFormat format = FieldFormat::Float;
-  uint32_t nx = 128;
-  uint32_t ny = 128;
-  uint32_t nz = 128;
+  uint32_t nx = 50;
+  uint32_t ny = 50;
+  uint32_t nz = 50;
 
   std::vector<char> scalarField_host;
 
@@ -355,7 +355,10 @@ out layout(location=0) vec4 outColor;
 uniform layout(location=2) vec4 color;
 
 void main() {
-  outColor = color;
+  if(gl_FrontFacing)
+    outColor = color.rgba;
+  else
+    outColor = color.bgra;
   //outColor = vec4(abs(normal), 1);
   //outColor = vec4(1,0,0,1);
 }
@@ -919,6 +922,8 @@ int main(int argc, char** argv)
       ComputeStuff::MC::buildP3(ctx,
                                 cudaBuf_d,
                                 cudaBuf_size,
+                                nx,
+                                nx* ny,
                                 make_uint3(0, 0, 0),
                                 make_uint3(nx, ny, nz),
                                 deviceMem,
@@ -950,6 +955,8 @@ int main(int argc, char** argv)
         ComputeStuff::MC::buildP3(ctx,
                                   cudaBuf_d,
                                   cudaBuf_size,
+                                  nx,
+                                  nx*ny,
                                   make_uint3(0, 0, 0),
                                   make_uint3(nx, ny, nz),
                                   deviceMem,
@@ -1034,12 +1041,24 @@ int main(int argc, char** argv)
     CHECK_GL;
 
 #endif
+    glEnable(GL_DEPTH_TEST);
     glUseProgram(simplePrg);
     glBindVertexArray(cudaVbo);
     glUniformMatrix4fv(0, 1, GL_FALSE, rz_ry_rx);
     glUniformMatrix4fv(1, 1, GL_FALSE, frustum_shift_rz_ry_rx);
+
+
+    glPolygonOffset(1.f, 1.f);
+    glEnable(GL_POLYGON_OFFSET_FILL);
+
+    glUniform4f(2, 0.6f, 0.6f, 0.8f, 1.f);
+    glDrawArrays(GL_TRIANGLES, 0, N);
+    glDisable(GL_POLYGON_OFFSET_FILL);
+
+    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
     glUniform4f(2, 1.f, 1.f, 1.f, 1.f);
-    glDrawArrays(GL_POINTS, 0, N);
+    glDrawArrays(GL_TRIANGLES, 0, N);
+    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
 
     glfwSwapBuffers(win);

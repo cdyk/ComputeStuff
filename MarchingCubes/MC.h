@@ -24,7 +24,7 @@ namespace ComputeStuff {
     struct Context
     {
       const Tables* tables = nullptr;
-      uint8_t* cases = nullptr;           // 800 * chunk count
+      uint8_t* index_cases_d = nullptr;           // 800 * chunk count
       uint4* pyramid = nullptr;           // baselevel is full grid
       uint32_t* sidebands[2] = {
         nullptr,                          // baselevel / 5
@@ -54,7 +54,9 @@ namespace ComputeStuff {
     void buildP3(Context* ctx,
                  void* output_buffer,
                  size_t output_buffer_size,
-                 uint3 offset,
+                 size_t field_row_stride,
+                 size_t field_slice_stride,
+                 uint3 field_offset,
                  uint3 field_size,
                  const float* field,
                  const float threshold,

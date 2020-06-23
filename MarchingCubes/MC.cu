@@ -56,7 +56,7 @@ namespace {
   }
 
   template<class FieldType>
-  __global__ __launch_bounds__(32) void reduce_base(uint8_t* __restrict__           cases_d,
+  __global__ __launch_bounds__(32) void reduce_base(uint8_t* __restrict__           index_cases_d,
                                                     uint4*   __restrict__           out_level0_d,
                                                     uint32_t* __restrict__          out_sideband_d,
                                                     const uint8_t* __restrict__     index_count,
@@ -114,11 +114,11 @@ namespace {
         sum = counts.e0 + counts.e1 + counts.e2 + counts.e3 + counts.e4;
 
         // todo: check if sum is nonzero.
-        cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 0] = cases.e0;
-        cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 1] = cases.e1;
-        cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 2] = cases.e2;
-        cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 3] = cases.e3;
-        cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 4] = cases.e4;
+        index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 0] = cases.e0;
+        index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 1] = cases.e1;
+        index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 2] = cases.e2;
+        index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 3] = cases.e3;
+        index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 4] = cases.e4;
         out_level0_d[32 * 5 * blockIdx.x + 32 * y + thread] = make_uint4(counts.e0,
                                                                          counts.e0 + counts.e1,
                                                                          counts.e0 + counts.e1 + counts.e2,
@@ -253,11 +253,17 @@ namespace {
     return offset;
   }
 
-  __global__ void extractP(float* __restrict__        output,
-                           const uint32_t             output_count,
-                           const uint4* __restrict__  pyramid,
-                           const uint2                chunks,
-                           const float3               scale)
+  __global__ void extractP(float* __restrict__          output,
+                           const uint4* __restrict__    pyramid,
+                           const uint8_t* __restrict__  index_cases,
+                           const uint8_t* __restrict__  index_table,
+                           const size_t                 field_row_stride,
+                           const size_t                 field_slice_stride,
+                           const uint3                  field_offset,
+                           const uint3                  field_size,
+                           const uint32_t               output_count,
+                           const uint2                  chunks,
+                           const float3                 scale)
   {
     const uint32_t* level_offset = (const uint32_t*)(pyramid);
     const uint32_t level_count = level_offset[31];
@@ -274,6 +280,8 @@ namespace {
         offset = processHP5Item(key, 5 * offset, pyramid[level_offset[l] + offset]);
       }
 
+      uint8_t index_case = index_cases[offset];
+      uint8_t index_code = index_table[16u * index_case + key];
       uint32_t q = offset / 800;
 
       uint3 chunk = make_uint3(q % chunks.x,
@@ -281,28 +289,51 @@ namespace {
                                (q / chunks.x) / chunks.y);
 
       uint32_t r = offset % 800;
-      uint3 cell = make_uint3(32 * chunk.x + ((r/5) % 32),
-                              5 * chunk.y + ((r % 5)),
-                              5 * chunk.z + ((r / 5) / 32));
+      uint3 p0 = make_uint3(32 * chunk.x + ((r/5) % 32),
+                             5 * chunk.y + ((r % 5)),
+                             5 * chunk.z + ((r / 5) / 32));
+      p0.x += (index_code >> 3) & 1;
+      p0.y += (index_code >> 4) & 1;
+      p0.z += (index_code >> 5) & 1;
 
+      uint3 p1 = p0;
+      p1.x += (index_code >> 0) & 1;
+      p1.y += (index_code >> 1) & 1;
+      p1.z += (index_code >> 2) & 1;
 
-      output[3 * ix + 0] = scale.x * cell.x;
-      output[3 * ix + 1] = scale.y * cell.y;
-      output[3 * ix + 2] = scale.z * cell.z;
+      output[3 * ix + 0] = 0.5f * scale.x * (p0.x + p1.x);
+      output[3 * ix + 1] = 0.5f * scale.y * (p0.y + p1.y);
+      output[3 * ix + 2] = 0.5f * scale.z * (p0.z + p1.z);
     }
   }
 
 
-  __global__ void runExtractionP(float* __restrict__        output,
-                                 const uint32_t             output_count,
-                                 const uint4* __restrict__  pyramid,
-                                 const uint2                chunks,
-                                 const float3               scale)
+  __global__ void runExtractionP(float* __restrict__          output,
+                                 const uint4* __restrict__    pyramid,
+                                 const uint8_t* __restrict__  index_cases,
+                                 const uint8_t* __restrict__  index_table,
+                                 const size_t                 field_row_stride,
+                                 const size_t                 field_slice_stride,
+                                 const uint3                  field_offset,
+                                 const uint3                  field_size,
+                                 const uint32_t               output_count,
+                                 const uint2                  chunks,
+                                 const float3                 scale)
   {
     if (threadIdx.x == 0) {
-      uint32_t index_count = min(output_count, pyramid[8].x);
-      if (index_count) {
-        extractP<<<(index_count + 255) / 256, 256>>>(output, index_count, pyramid, chunks, scale);
+      uint32_t output_count_clamped = min(output_count, pyramid[8].x);
+      if (output_count_clamped) {
+        extractP<<<(output_count_clamped + 255) / 256, 256>>>(output,
+                                                              pyramid,
+                                                              index_cases,
+                                                              index_table,
+                                                              field_row_stride,
+                                                              field_slice_stride,
+                                                              field_offset,
+                                                              field_size,
+                                                              output_count_clamped,
+                                                              chunks,
+                                                              scale);
       }
     }
   }
@@ -345,7 +376,7 @@ ComputeStuff::MC::Context* ComputeStuff::MC::createContext(const Tables* tables,
           ctx->chunks.x, ctx->chunks.y, ctx->chunks.z, ctx->chunk_total);
 
   // cases array is of size 800 * chunk count:
-  CHECKED_CUDA(cudaMalloc(&ctx->cases, sizeof(uint32_t) * 800 * ctx->chunk_total ));
+  CHECKED_CUDA(cudaMalloc(&ctx->index_cases_d, sizeof(uint32_t) * 800 * ctx->chunk_total ));
 
   // Pyramid base level, as number of uvec4's:
   ctx->level_sizes[0] = (800 * ctx->chunk_total + 4) / 5;
@@ -415,14 +446,16 @@ void ComputeStuff::MC::getCounts(Context* ctx, uint32_t* vertices, uint32_t* ind
 void ComputeStuff::MC::buildP3(Context* ctx,
                                void* output_buffer,
                                size_t output_buffer_size,
-                               uint3 offset,
+                               size_t field_row_stride,
+                               size_t field_slice_stride,
+                               uint3 field_offset,
                                uint3 field_size,
                                const float* field_d,
                                const float threshold,
                                cudaStream_t stream)
 {
   const unsigned chunks = ctx->chunk_total;
-  ::reduce_base<float><<<chunks, 32, 0, stream>>>(ctx->cases,                           // block writes 5*5*32=800 uint8's
+  ::reduce_base<float><<<chunks, 32, 0, stream>>>(ctx->index_cases_d,                   // block writes 5*5*32=800 uint8's
                                                   ctx->pyramid + ctx->level_offsets[0], // block writes 5*32 uvec4's
                                                   ctx->sidebands[0],                    // block writes 5*32 uint32's
                                                   ctx->tables->index_count,
@@ -452,12 +485,17 @@ void ComputeStuff::MC::buildP3(Context* ctx,
 
   if (output_buffer) {
     ::runExtractionP<<<1, 32, 0, stream>>>(reinterpret_cast<float*>(output_buffer),
-                                           static_cast<uint32_t>(output_buffer_size / (3 * sizeof(float))),
                                            ctx->pyramid,
+                                           ctx->index_cases_d,
+                                           ctx->tables->index_table,
+                                           field_row_stride,
+                                           field_slice_stride,
+                                           field_offset,
+                                           field_size,
+                                           static_cast<uint32_t>(output_buffer_size / (3 * sizeof(float))),
                                            make_uint2(ctx->chunks.x, ctx->chunks.y),
                                            make_float3(1.f/ctx->cells.x,
                                                        1.f/ctx->cells.y,
                                                        1.f/ctx->cells.z));
   }
 }
-
