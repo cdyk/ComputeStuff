@@ -253,19 +253,19 @@ namespace {
     return offset;
   }
 
-  __global__ void extractP(float* __restrict__          output,
-                           const uint4* __restrict__    pyramid,
-                           const float* __restrict__    field,
-                           const uint8_t* __restrict__  index_cases,
-                           const uint8_t* __restrict__  index_table,
-                           const size_t                 field_row_stride,
-                           const size_t                 field_slice_stride,
-                           const uint3                  field_offset,
-                           const uint3                  field_size,
-                           const uint32_t               output_count,
-                           const uint2                  chunks,
-                           const float3                 scale,
-                           const float                  threshold)
+  __global__ void extractPN(float* __restrict__          output,
+                            const uint4* __restrict__    pyramid,
+                            const float* __restrict__    field,
+                            const uint8_t* __restrict__  index_cases,
+                            const uint8_t* __restrict__  index_table,
+                            const size_t                 field_row_stride,
+                            const size_t                 field_slice_stride,
+                            const uint3                  field_offset,
+                            const uint3                  field_size,
+                            const uint32_t               output_count,
+                            const uint2                  chunks,
+                            const float3                 scale,
+                            const float                  threshold)
   {
     const uint32_t* level_offset = (const uint32_t*)(pyramid);
     const uint32_t level_count = level_offset[31];
@@ -303,6 +303,9 @@ namespace {
                             p0.z + field_offset.z);
       size_t o0 = q0.x + q0.y * field_row_stride + q0.z * field_slice_stride;
       float f0 = field[o0];
+      float f0x = field[o0 + (q0.x < field_size.x ? 1 : 0)];
+      float f0y = field[o0 + (q0.y < field_size.y ? field_row_stride : 0)];
+      float f0z = field[o0 + (q0.z < field_size.z ? field_slice_stride : 0)];
 
       uint3 p1 = p0;
       p1.x += (index_code >> 0) & 1;
@@ -315,46 +318,60 @@ namespace {
 
       size_t o1 = q1.x + q1.y * field_row_stride + q1.z * field_slice_stride;
       float f1 = field[o1];
+      float f1x = field[o1 + (q1.x < field_size.x ? 1 : 0)];
+      float f1y = field[o1 + (q1.y < field_size.y ? field_row_stride : 0)];
+      float f1z = field[o1 + (q1.z < field_size.z ? field_slice_stride : 0)];
 
       float t = (threshold - f0) / (f1 - f0);
 
-      output[3 * ix + 0] = scale.x * ((1.f - t) * p0.x + t * p1.x);
-      output[3 * ix + 1] = scale.y * ((1.f - t) * p0.y + t * p1.y);
-      output[3 * ix + 2] = scale.z * ((1.f - t) * p0.z + t * p1.z);
+      float nx = scale.x * ((1.f - t) * f0x + t * f1x - threshold);
+      float ny = scale.y * ((1.f - t) * f0y + t * f1y - threshold);
+      float nz = scale.z * ((1.f - t) * f0z + t * f1z - threshold);
+      float nn = __frsqrt_rn(nx * nx + ny * ny + nz * nz);
+
+      output[6 * ix + 0] = scale.x * ((1.f - t) * p0.x + t * p1.x);
+      output[6 * ix + 1] = scale.y * ((1.f - t) * p0.y + t * p1.y);
+      output[6 * ix + 2] = scale.z * ((1.f - t) * p0.z + t * p1.z);
+      output[6 * ix + 3] = nn * nx;
+      output[6 * ix + 4] = nn * ny;
+      output[6 * ix + 5] = nn * nz;
     }
   }
 
 
-  __global__ void runExtractionP(float* __restrict__          output,
-                                 const uint4* __restrict__    pyramid,
-                                 const float* __restrict__    field,
-                                 const uint8_t* __restrict__  index_cases,
-                                 const uint8_t* __restrict__  index_table,
-                                 const size_t                 field_row_stride,
-                                 const size_t                 field_slice_stride,
-                                 const uint3                  field_offset,
-                                 const uint3                  field_size,
-                                 const uint32_t               output_count,
-                                 const uint2                  chunks,
-                                 const float3                 scale,
-                                 const float                  threshold)
+  __global__ void runExtractionPN(float* __restrict__          output,
+                                  const uint4* __restrict__    pyramid,
+                                  const float* __restrict__    field,
+                                  const uint8_t* __restrict__  index_cases,
+                                  const uint8_t* __restrict__  index_table,
+                                  const size_t                 field_row_stride,
+                                  const size_t                 field_slice_stride,
+                                  const uint3                  field_offset,
+                                  const uint3                  field_size,
+                                  const uint32_t               output_count,
+                                  const uint2                  chunks,
+                                  const float3                 scale,
+                                  const float                  threshold,
+                                  bool                         alwaysExtract)
   {
     if (threadIdx.x == 0) {
       uint32_t output_count_clamped = min(output_count, pyramid[8].x);
       if (output_count_clamped) {
-        extractP<<<(output_count_clamped + 255) / 256, 256>>>(output,
-                                                              pyramid,
-                                                              field,
-                                                              index_cases,
-                                                              index_table,
-                                                              field_row_stride,
-                                                              field_slice_stride,
-                                                              field_offset,
-                                                              field_size,
-                                                              output_count_clamped,
-                                                              chunks,
-                                                              scale,
-                                                              threshold);
+        extractPN<<<(output_count_clamped + 255) / 256, 256>>>(output,
+                                                               pyramid,
+                                                               field,
+                                                               index_cases,
+                                                               index_table,
+                                                               field_row_stride,
+                                                               field_slice_stride,
+                                                               field_offset,
+                                                               make_uint3(field_size.x - 1,
+                                                                          field_size.y - 1,
+                                                                          field_size.z - 1),
+                                                               output_count_clamped,
+                                                               chunks,
+                                                               scale,
+                                                               threshold);
       }
     }
   }
@@ -464,7 +481,7 @@ void ComputeStuff::MC::getCounts(Context* ctx, uint32_t* vertices, uint32_t* ind
 }
 
 
-void ComputeStuff::MC::buildP3(Context* ctx,
+void ComputeStuff::MC::buildPN(Context* ctx,
                                void* output_buffer,
                                size_t output_buffer_size,
                                size_t field_row_stride,
@@ -473,52 +490,56 @@ void ComputeStuff::MC::buildP3(Context* ctx,
                                uint3 field_size,
                                const float* field_d,
                                const float threshold,
-                               cudaStream_t stream)
+                               cudaStream_t stream,
+                               bool buildPyramid = true,
+                               bool alwaysExtract = true)
 {
-  const unsigned chunks = ctx->chunk_total;
-  ::reduce_base<float><<<chunks, 32, 0, stream>>>(ctx->index_cases_d,                   // block writes 5*5*32=800 uint8's
-                                                  ctx->pyramid + ctx->level_offsets[0], // block writes 5*32 uvec4's
-                                                  ctx->sidebands[0],                    // block writes 5*32 uint32's
-                                                  ctx->tables->index_count,
-                                                  field_d,
-                                                  field_d + size_t(field_size.x) * field_size.y * field_size.z,
-                                                  size_t(field_size.x),
-                                                  size_t(field_size.x) * field_size.y,
-                                                  threshold,
-                                                  ctx->chunks,
-                                                  ctx->cells);
+  if (buildPyramid) {
+    ::reduce_base<float> << <ctx->chunk_total, 32, 0, stream >> > (ctx->index_cases_d,                   // block writes 5*5*32=800 uint8's
+                                                                   ctx->pyramid + ctx->level_offsets[0], // block writes 5*32 uvec4's
+                                                                   ctx->sidebands[0],                    // block writes 5*32 uint32's
+                                                                   ctx->tables->index_count,
+                                                                   field_d,
+                                                                   field_d + size_t(field_size.x) * field_size.y * field_size.z,
+                                                                   size_t(field_size.x),
+                                                                   size_t(field_size.x) * field_size.y,
+                                                                   threshold,
+                                                                   ctx->chunks,
+                                                                   ctx->cells);
 
-  bool sb = true;
-  for (unsigned i = 1; i < ctx->levels - 3; i++) {
-    const auto blocks = (ctx->level_sizes[i] + 31) / 32;
-    reduce1<<<blocks, 5*32, 0, stream>>>(ctx->pyramid + ctx->level_offsets[i], // Each block will write 32 uvec4's into this
-                                         ctx->sidebands[sb ? 1 : 0],           // Each block will write 32 uint32's into this
-                                         ctx->level_sizes[i],                  // Number of uvec4's in level i
-                                         ctx->sidebands[sb ? 0 : 1],           // Input, each block will read 5*32=160 values from here
-                                         ctx->level_sizes[i-1]);               // Number of sideband elements from level i-1
-    sb = !sb;
+    bool sb = true;
+    for (unsigned i = 1; i < ctx->levels - 3; i++) {
+      const auto blocks = (ctx->level_sizes[i] + 31) / 32;
+      reduce1 << <blocks, 5 * 32, 0, stream >> > (ctx->pyramid + ctx->level_offsets[i], // Each block will write 32 uvec4's into this
+                                                  ctx->sidebands[sb ? 1 : 0],           // Each block will write 32 uint32's into this
+                                                  ctx->level_sizes[i],                  // Number of uvec4's in level i
+                                                  ctx->sidebands[sb ? 0 : 1],           // Input, each block will read 5*32=160 values from here
+                                                  ctx->level_sizes[i - 1]);               // Number of sideband elements from level i-1
+      sb = !sb;
+    }
+    reduceApex << <1, 4 * 32, 0, stream >> > (ctx->pyramid + 8,
+                                              ctx->sum_d,
+                                              ctx->sidebands[sb ? 0 : 1],
+                                              ctx->level_sizes[ctx->levels - 4]);
+    CHECKED_CUDA(cudaEventRecord(ctx->countWritten, stream));
   }
-  reduceApex<<<1, 4*32, 0, stream>>>(ctx->pyramid + 8,
-                                     ctx->sum_d,
-                                     ctx->sidebands[sb ? 0 : 1],
-                                     ctx->level_sizes[ctx->levels - 4]);
-  CHECKED_CUDA(cudaEventRecord(ctx->countWritten, stream));
 
   if (output_buffer) {
-    ::runExtractionP<<<1, 32, 0, stream>>>(reinterpret_cast<float*>(output_buffer),
-                                           ctx->pyramid,
-                                           field_d,
-                                           ctx->index_cases_d,
-                                           ctx->tables->index_table,
-                                           field_row_stride,
-                                           field_slice_stride,
-                                           field_offset,
-                                           field_size,
-                                           static_cast<uint32_t>(output_buffer_size / (3 * sizeof(float))),
-                                           make_uint2(ctx->chunks.x, ctx->chunks.y),
-                                           make_float3(1.f/ctx->cells.x,
-                                                       1.f/ctx->cells.y,
-                                                       1.f/ctx->cells.z),
-                                           threshold);
+    ::runExtractionPN<<<1, 32, 0, stream>>>(reinterpret_cast<float*>(output_buffer),
+                                            ctx->pyramid,
+                                            field_d,
+                                            ctx->index_cases_d,
+                                            ctx->tables->index_table,
+                                            field_row_stride,
+                                            field_slice_stride,
+                                            field_offset,
+                                            field_size,
+                                            static_cast<uint32_t>(output_buffer_size / (6 * sizeof(float))),
+                                            make_uint2(ctx->chunks.x, ctx->chunks.y),
+                                            make_float3(1.f / ctx->cells.x,
+                                                        1.f / ctx->cells.y,
+                                                        1.f / ctx->cells.z),
+                                            threshold,
+                                            alwaysExtract);
   }
 }

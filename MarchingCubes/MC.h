@@ -51,7 +51,7 @@ namespace ComputeStuff {
                            uint3 cells,
                            cudaStream_t stream);
 
-    void buildP3(Context* ctx,
+    void buildPN(Context* ctx,
                  void* output_buffer,
                  size_t output_buffer_size,
                  size_t field_row_stride,
@@ -60,7 +60,9 @@ namespace ComputeStuff {
                  uint3 field_size,
                  const float* field,
                  const float threshold,
-                 cudaStream_t stream);
+                 cudaStream_t stream,
+                 bool skipPyramid,
+                 bool alwaysExtract);
 
     void destroyContext(Context* ctx);
 

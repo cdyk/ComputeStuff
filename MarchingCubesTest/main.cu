@@ -319,9 +319,9 @@ namespace {
   };
 
   FieldFormat format = FieldFormat::Float;
-  uint32_t nx = 50;
-  uint32_t ny = 50;
-  uint32_t nz = 50;
+  uint32_t nx = 255;
+  uint32_t ny = 255;
+  uint32_t nz = 255;
 
   std::vector<char> scalarField_host;
 
@@ -333,7 +333,7 @@ namespace {
   const std::string simpleVS_src = R"(#version 430
 
 in layout(location=0) vec3 inPosition;
-//in layout(location=1) vec3 inNormal;
+in layout(location=1) vec3 inNormal;
 
 out vec3 normal;
 
@@ -341,7 +341,7 @@ uniform layout(location=0) mat4 MV;
 uniform layout(location=1) mat4 MVP;
 
 void main() {
-  //normal = mat3(MV)*inNormal;
+  normal = mat3(MV)*inNormal;
   gl_Position = MVP * vec4(inPosition, 1);
   //gl_Position = vec4(inPosition, 1);
 }
@@ -349,14 +349,18 @@ void main() {
 
   const std::string simpleFS_src = R"(#version 430
 
-//in vec3 normal;
+in vec3 normal;
 
 out layout(location=0) vec4 outColor;
 uniform layout(location=2) vec4 color;
+uniform layout(location=3) uint shade;
 
 void main() {
+ 
+  float d = max(0.0, dot(vec3(0,0,1), gl_FrontFacing ? -normal : normal));
+
   if(gl_FrontFacing)
-    outColor = color.rgba;
+    outColor = d * color.rgba;
   else
     outColor = color.bgra;
   //outColor = vec4(abs(normal), 1);
@@ -885,10 +889,10 @@ int main(int argc, char** argv)
   glGenVertexArrays(1, &cudaVbo);
   glBindVertexArray(cudaVbo);
   glBindBuffer(GL_ARRAY_BUFFER, cudaBuf);
-  glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(float) * 3, nullptr);
-  //  glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(float) * 6, (void*)(sizeof(float) * 3));
+  glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(float) * 6, nullptr);
+  glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(float) * 6, (void*)(sizeof(float) * 3));
   glEnableVertexAttribArray(0);
-  //  glEnableVertexAttribArray(1);
+  glEnableVertexAttribArray(1);
 
 
   auto start = std::chrono::system_clock::now();
@@ -919,7 +923,7 @@ int main(int argc, char** argv)
       CHECKED_CUDA(cudaGraphicsMapResources(1, &bufferResource, stream));
       CHECKED_CUDA(cudaGraphicsResourceGetMappedPointer(&cudaBuf_d, &cudaBuf_size, bufferResource));
       CHECKED_CUDA(cudaEventRecord(events[2 * eventCounter + 0], stream));
-      ComputeStuff::MC::buildP3(ctx,
+      ComputeStuff::MC::buildPN(ctx,
                                 cudaBuf_d,
                                 cudaBuf_size,
                                 nx,
@@ -928,7 +932,9 @@ int main(int argc, char** argv)
                                 make_uint3(nx, ny, nz),
                                 deviceMem,
                                 threshold,
-                                stream);
+                                stream,
+                                true,
+                                false);
       CHECKED_CUDA(cudaEventRecord(events[2 * eventCounter + 1], stream));
       CHECKED_CUDA(cudaGraphicsUnmapResources(1, &bufferResource, stream));
       ComputeStuff::MC::getCounts(ctx, &vertices, &indices);
@@ -938,11 +944,11 @@ int main(int argc, char** argv)
       CHECKED_CUDA(cudaEventElapsedTime(&ms, events[2 * eventCounter + 0], events[2 * eventCounter + 1]));
       cuda_ms += ms;
 
-      if (cudaBuf_size < 3 * sizeof(float) * vertices) {
+      if (cudaBuf_size < 6 * sizeof(float) * vertices) {
 
         CHECKED_CUDA(cudaGraphicsUnregisterResource(bufferResource));
 
-        size_t newSize = 3 * sizeof(float) * (static_cast<size_t>(vertices) + vertices / 16);
+        size_t newSize = 6 * sizeof(float) * (static_cast<size_t>(vertices) + vertices / 16);
         fprintf(stderr, "Resizing VBO to %zu bytes\n", newSize);
         glBindBuffer(GL_ARRAY_BUFFER, cudaBuf);
         glBufferData(GL_ARRAY_BUFFER, newSize, nullptr, GL_STREAM_DRAW);
@@ -952,7 +958,7 @@ int main(int argc, char** argv)
 
         CHECKED_CUDA(cudaGraphicsMapResources(1, &bufferResource, stream));
         CHECKED_CUDA(cudaGraphicsResourceGetMappedPointer(&cudaBuf_d, &cudaBuf_size, bufferResource));
-        ComputeStuff::MC::buildP3(ctx,
+        ComputeStuff::MC::buildPN(ctx,
                                   cudaBuf_d,
                                   cudaBuf_size,
                                   nx,
@@ -961,7 +967,9 @@ int main(int argc, char** argv)
                                   make_uint3(nx, ny, nz),
                                   deviceMem,
                                   threshold,
-                                  stream);
+                                  stream,
+                                  false,
+                                  true);
         CHECKED_CUDA(cudaGraphicsUnmapResources(1, &bufferResource, stream));
       }
     }
@@ -1048,18 +1056,21 @@ int main(int argc, char** argv)
     glUniformMatrix4fv(1, 1, GL_FALSE, frustum_shift_rz_ry_rx);
 
 
-    glPolygonOffset(1.f, 1.f);
+    glPolygonOffset(0.f, 1.f);
     glEnable(GL_POLYGON_OFFSET_FILL);
 
     glUniform4f(2, 0.6f, 0.6f, 0.8f, 1.f);
+    glUniform1i(3, 1);
     glDrawArrays(GL_TRIANGLES, 0, N);
     glDisable(GL_POLYGON_OFFSET_FILL);
 
+#if 0
     glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+    glUniform1i(3, 0);
     glUniform4f(2, 1.f, 1.f, 1.f, 1.f);
     glDrawArrays(GL_TRIANGLES, 0, N);
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-
+#endif
 
     glfwSwapBuffers(win);
     glfwPollEvents();
