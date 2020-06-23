@@ -239,7 +239,11 @@ namespace {
                                  const uint4* __restrict__  pyramid)
   {
     if (threadIdx.x == 0) {
-      uint32_t index_count = min(output_count, pyramid[0].x);
+      uint32_t index_count = min(output_count, pyramid[8].x);
+      for (unsigned i = 0; i < 32; i++) {
+        printf("%d: %8d\n", i, ((uint32_t*)pyramid)[i]);
+      }
+      printf("CUDA %d\n", index_count);
       if (index_count) {
         extractP<<<(index_count + 255) / 256, 256>>>(output, index_count, pyramid);
       }
@@ -261,14 +265,12 @@ ComputeStuff::MC::Context* ComputeStuff::MC::createContext(const Tables* tables,
                                                            uint3 cells,
                                                            cudaStream_t stream)
 {
-  // Minimal nonzero size:
-  //
-  // L0    800
-  // L1    160
-  // L2     32
-  // L3      7  In apex
-  // L4      2  In apex
-
+  // Minimal nonzero size, one chunk, 5 levels
+  // [0]       40      160  (640)
+  // [1]      200       32  (128)
+  // [2]       15        7  (28)
+  // [3]       10        2  (8)
+  // [4]        9        1  (4)
 
   //assert(tables);
   auto * ctx = new Context();
@@ -281,7 +283,7 @@ ComputeStuff::MC::Context* ComputeStuff::MC::createContext(const Tables* tables,
   ctx->chunks = make_uint3(((cells.x + 31) / 32),
                            ((cells.y + 4) / 5),
                            ((cells.z + 4) / 5));
-  ctx->chunk_total = ctx->chunks.x * ctx->chunks.y * ctx->chunks.z;
+  ctx->chunk_total = ctx->chunks.x* ctx->chunks.y* ctx->chunks.z;
   fprintf(stderr, "Chunks [%u x %u x %u] = %u\n",
           ctx->chunks.x, ctx->chunks.y, ctx->chunks.z, ctx->chunk_total);
 
@@ -292,9 +294,9 @@ ComputeStuff::MC::Context* ComputeStuff::MC::createContext(const Tables* tables,
   ctx->level_sizes[0] = (800 * ctx->chunk_total + 4) / 5;
   ctx->levels = 1 + static_cast<uint32_t>(std::ceil(std::log(ctx->level_sizes[0]) / std::log(5.0)));
   assert(4 <= ctx->levels);
-  assert(ctx->levels < 32u);
+  assert(ctx->levels < 31u);
 
-  ctx->level_offsets[0] = 32; // Apex in front (32 uvec4's).
+  ctx->level_offsets[0] = 8 + 32; // First, level offsets (32 uint32's = 8 uvec4's), then pyramid apex (32 uvec4's).
   for (unsigned l = 1; l < ctx->levels - 3; l++) {
     ctx->level_sizes[l]   = (ctx->level_sizes[l - 1] + 4) / 5;
     ctx->level_offsets[l] = ctx->level_offsets[l - 1] + ctx->level_sizes[l - 1];
@@ -306,13 +308,15 @@ ComputeStuff::MC::Context* ComputeStuff::MC::createContext(const Tables* tables,
   }
   assert(25 < ctx->level_offsets[ctx->levels - 4]);
   assert(ctx->level_offsets[ctx->levels - 3] <= 25);
-  ctx->level_offsets[ctx->levels - 3] = 7; // up to 25 uvec4's
-  ctx->level_offsets[ctx->levels - 2] = 2; // up to 5 uvec4's
-  ctx->level_offsets[ctx->levels - 1] = 1; // one uvec4
+  ctx->level_offsets[ctx->levels - 3] = 8 + 7; // up to 25 uvec4's
+  ctx->level_offsets[ctx->levels - 2] = 8 + 2; // up to 5 uvec4's
+  ctx->level_offsets[ctx->levels - 1] = 8 + 1; // one uvec4
+  ctx->level_offsets[31] = ctx->levels;         // Store # levels in top entry.
 
   // Alloc pyramid
   CHECKED_CUDA(cudaMalloc(&ctx->pyramid, sizeof(uint4) * ctx->total_size));
   CHECKED_CUDA(cudaMemsetAsync(ctx->pyramid, 1, sizeof(uint4) * ctx->total_size, stream));
+  CHECKED_CUDA(cudaMemcpy(ctx->pyramid, ctx->level_offsets, sizeof(Context::level_offsets), cudaMemcpyHostToDevice));
 
   // Alloc sideband 0
   size_t sideband0_size = ctx->level_sizes[0];
@@ -329,7 +333,7 @@ ComputeStuff::MC::Context* ComputeStuff::MC::createContext(const Tables* tables,
   for (unsigned l = 0; l < ctx->levels; l++) {
     fprintf(stderr, "[%d] %8d %8d  (%8d)\n", l, ctx->level_offsets[l], ctx->level_sizes[l], 4*ctx->level_sizes[l]);
   }
-  fprintf(stderr, "Total %d\n", ctx->total_size);
+  fprintf(stderr, "Total %d, levels %d \n", ctx->total_size, ctx->levels);
 
   CHECKED_CUDA(cudaHostAlloc(&ctx->sum_h, sizeof(uint32_t), cudaHostAllocMapped));
   CHECKED_CUDA(cudaHostGetDevicePointer(&ctx->sum_d, ctx->sum_h, 0));
@@ -410,7 +414,7 @@ uint32_t ComputeStuff::MC::buildP3(Context* ctx,
     fprintf(stderr, "%u sum = %d\n", i, sum);
     sb = !sb;
   }
-  reduceApex<<<1, 4*32, 0, stream>>>(ctx->pyramid,
+  reduceApex<<<1, 4*32, 0, stream>>>(ctx->pyramid + 8,
                                      ctx->sum_d,
                                      ctx->sidebands[sb ? 0 : 1],
                                      ctx->level_sizes[ctx->levels - 4]);
