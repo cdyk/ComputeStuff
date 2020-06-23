@@ -255,6 +255,7 @@ namespace {
 
   __global__ void extractP(float* __restrict__          output,
                            const uint4* __restrict__    pyramid,
+                           const float* __restrict__    field,
                            const uint8_t* __restrict__  index_cases,
                            const uint8_t* __restrict__  index_table,
                            const size_t                 field_row_stride,
@@ -263,7 +264,8 @@ namespace {
                            const uint3                  field_size,
                            const uint32_t               output_count,
                            const uint2                  chunks,
-                           const float3                 scale)
+                           const float3                 scale,
+                           const float                  threshold)
   {
     const uint32_t* level_offset = (const uint32_t*)(pyramid);
     const uint32_t level_count = level_offset[31];
@@ -296,20 +298,36 @@ namespace {
       p0.y += (index_code >> 4) & 1;
       p0.z += (index_code >> 5) & 1;
 
+      uint3 q0 = make_uint3(p0.x + field_offset.x,
+                            p0.y + field_offset.y,
+                            p0.z + field_offset.z);
+      size_t o0 = q0.x + q0.y * field_row_stride + q0.z * field_slice_stride;
+      float f0 = field[o0];
+
       uint3 p1 = p0;
       p1.x += (index_code >> 0) & 1;
       p1.y += (index_code >> 1) & 1;
       p1.z += (index_code >> 2) & 1;
 
-      output[3 * ix + 0] = 0.5f * scale.x * (p0.x + p1.x);
-      output[3 * ix + 1] = 0.5f * scale.y * (p0.y + p1.y);
-      output[3 * ix + 2] = 0.5f * scale.z * (p0.z + p1.z);
+      uint3 q1 = make_uint3(p1.x + field_offset.x,
+                            p1.y + field_offset.y,
+                            p1.z + field_offset.z);
+
+      size_t o1 = q1.x + q1.y * field_row_stride + q1.z * field_slice_stride;
+      float f1 = field[o1];
+
+      float t = (threshold - f0) / (f1 - f0);
+
+      output[3 * ix + 0] = scale.x * ((1.f - t) * p0.x + t * p1.x);
+      output[3 * ix + 1] = scale.y * ((1.f - t) * p0.y + t * p1.y);
+      output[3 * ix + 2] = scale.z * ((1.f - t) * p0.z + t * p1.z);
     }
   }
 
 
   __global__ void runExtractionP(float* __restrict__          output,
                                  const uint4* __restrict__    pyramid,
+                                 const float* __restrict__    field,
                                  const uint8_t* __restrict__  index_cases,
                                  const uint8_t* __restrict__  index_table,
                                  const size_t                 field_row_stride,
@@ -318,13 +336,15 @@ namespace {
                                  const uint3                  field_size,
                                  const uint32_t               output_count,
                                  const uint2                  chunks,
-                                 const float3                 scale)
+                                 const float3                 scale,
+                                 const float                  threshold)
   {
     if (threadIdx.x == 0) {
       uint32_t output_count_clamped = min(output_count, pyramid[8].x);
       if (output_count_clamped) {
         extractP<<<(output_count_clamped + 255) / 256, 256>>>(output,
                                                               pyramid,
+                                                              field,
                                                               index_cases,
                                                               index_table,
                                                               field_row_stride,
@@ -333,7 +353,8 @@ namespace {
                                                               field_size,
                                                               output_count_clamped,
                                                               chunks,
-                                                              scale);
+                                                              scale,
+                                                              threshold);
       }
     }
   }
@@ -486,6 +507,7 @@ void ComputeStuff::MC::buildP3(Context* ctx,
   if (output_buffer) {
     ::runExtractionP<<<1, 32, 0, stream>>>(reinterpret_cast<float*>(output_buffer),
                                            ctx->pyramid,
+                                           field_d,
                                            ctx->index_cases_d,
                                            ctx->tables->index_table,
                                            field_row_stride,
@@ -496,6 +518,7 @@ void ComputeStuff::MC::buildP3(Context* ctx,
                                            make_uint2(ctx->chunks.x, ctx->chunks.y),
                                            make_float3(1.f/ctx->cells.x,
                                                        1.f/ctx->cells.y,
-                                                       1.f/ctx->cells.z));
+                                                       1.f/ctx->cells.z),
+                                           threshold);
   }
 }
