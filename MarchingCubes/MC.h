@@ -25,13 +25,21 @@ namespace ComputeStuff {
     struct Context
     {
       const Tables* tables = nullptr;
-      uint32_t* buffer = nullptr;
-      uint32_t* sidebands[2] = { nullptr, nullptr };
+      uint8_t* cases = nullptr;           // 800 * chunk count
+      uint4* pyramid = nullptr;           // baselevel is full grid
+      uint32_t* sidebands[2] = {
+        nullptr,                          // baselevel / 5
+        nullptr                           // baselevel / 5*5
+      };
+      uint32_t* sum_h = nullptr;
+      uint32_t* sum_d = nullptr;
+
       uint3 cells;
       uint3 chunks;
+      uint32_t chunk_total = 0;
       uint32_t levels = 0;
-      uint32_t level_sizes[32];
-      uint32_t level_offsets[32];
+      uint32_t level_sizes[32];   // nunber of uvec4's
+      uint32_t level_offsets[32]; // offsets in uvec4's
       uint32_t total_size;
     };
 
