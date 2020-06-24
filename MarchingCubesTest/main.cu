@@ -1061,7 +1061,7 @@ int main(int argc, char** argv)
 
     glUniform4f(2, 0.6f, 0.6f, 0.8f, 1.f);
     glUniform1i(3, 1);
-    glDrawArrays(GL_TRIANGLES, 0, N);
+    glDrawArrays(GL_POINTS, 0, N);
     glDisable(GL_POLYGON_OFFSET_FILL);
 
 #if 0

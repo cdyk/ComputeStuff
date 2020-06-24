@@ -256,88 +256,152 @@ namespace {
     return offset;
   }
 
-  __global__ void extractPN(float* __restrict__          output,
-                            const uint4* __restrict__    pyramid,
-                            const float* __restrict__    field,
-                            const uint8_t* __restrict__  index_cases,
-                            const uint8_t* __restrict__  index_table,
-                            const size_t                 field_row_stride,
-                            const size_t                 field_slice_stride,
-                            const uint3                  field_offset,
-                            const uint3                  field_size,
-                            const uint32_t               output_count,
-                            const uint2                  chunks,
-                            const float3                 scale,
-                            const float                  threshold)
+  struct hp5_result
   {
-    const uint32_t* level_offset = (const uint32_t*)(pyramid);
-    const uint32_t level_count = level_offset[15];
+    uint32_t offset;
+    uint32_t remainder;
+  };
+
+  __device__ hp5_result traverseDown(const uint4* __restrict__    pyramid,
+                                     const uint32_t* __restrict__ level_offset,
+                                     const uint32_t level_count,
+                                     const uint32_t input_index)
+  {
+    uint32_t key = input_index;
+    // Traverse apex
+    uint32_t offset = 0;
+    offset = processHP5Item(key, 0, pyramid[9]);
+    offset = processHP5Item(key, 5 * offset, pyramid[10 + offset]);
+    offset = processHP5Item(key, 5 * offset, pyramid[15 + offset]);
+    for (unsigned l = level_count - 4; l < level_count; l--) {
+      offset = processHP5Item(key, 5 * offset, pyramid[level_offset[l] + offset]);
+    }
+    return { offset, key };
+  }
+
+  __device__ uint3 decodeCellPosition(const uint2 chunks, const uint32_t offset)
+  {
+    uint32_t q = offset / 800;
+
+    uint3 chunk = make_uint3(q % chunks.x,
+                             (q / chunks.x) % chunks.y,
+                             (q / chunks.x) / chunks.y);
+
+    uint32_t r = offset % 800;
+    uint3 p0 = make_uint3(31 * chunk.x + ((r / 5) % 32),
+                          5 * chunk.y + ((r % 5)),
+                          5 * chunk.z + ((r / 5) / 32));
+    return p0;
+  }
+
+  __device__ float4 sampleField(const float* __restrict__ field,
+                                const uint3 field_offset,
+                                const uint3 field_max_index,
+                                const size_t field_row_stride,
+                                const size_t field_slice_stride,
+                                const uint3 i)
+  {
+    uint3 q = make_uint3(i.x + field_offset.x,
+                         i.y + field_offset.y,
+                         i.z + field_offset.z);
+    bool less_x = q.x < field_max_index.x;
+    bool less_y = q.y < field_max_index.y;
+    bool less_z = q.z < field_max_index.y;
+
+    q.x = less_x ? q.x : field_max_index.x;
+    q.y = less_y ? q.y : field_max_index.y;
+    q.z = less_z ? q.z : field_max_index.z;
+    size_t o = q.x + q.y * field_row_stride + q.z * field_slice_stride;
+
+    return make_float4(field[o + (less_x ? 1 : 0)],
+                       field[o + (less_y ? field_row_stride : 0)],
+                       field[o + (less_z ? field_slice_stride : 0)],
+                       field[o]);
+  }
+
+  __device__ void emitVertexNormal(float* __restrict__ output,
+                                   const float* __restrict__ field,
+                                   const float3 scale,
+                                   const uint3 field_offset,
+                                   const uint3 field_max_index,
+                                   const size_t field_row_stride,
+                                   const size_t field_slice_stride,
+                                   const float threshold,
+                                   const uint3 i0,
+                                   const uint3 i1)
+  {
+    float4 f0 = sampleField(field,
+                            field_offset,
+                            field_max_index,
+                            field_row_stride,
+                            field_slice_stride,
+                            i0);
+
+    float4 f1 = sampleField(field,
+                            field_offset,
+                            field_max_index,
+                            field_row_stride,
+                            field_slice_stride,
+                            i1);
+
+    float t = (threshold - f0.w) / (f1.w - f0.w);
+
+    float nx = scale.x * ((1.f - t) * f0.x + t * f1.x - threshold);
+    float ny = scale.y * ((1.f - t) * f0.y + t * f1.y - threshold);
+    float nz = scale.z * ((1.f - t) * f0.z + t * f1.z - threshold);
+    float nn = __frsqrt_rn(nx * nx + ny * ny + nz * nz);
+
+    output[0] = scale.x * ((1.f - t) * i0.x + t * i1.x);
+    output[1] = scale.y * ((1.f - t) * i0.y + t * i1.y);
+    output[2] = scale.z * ((1.f - t) * i0.z + t * i1.z);
+    output[3] = nn * nx;
+    output[4] = nn * ny;
+    output[5] = nn * nz;
+  }
+
+  __global__ void extractVertexPN(float* __restrict__          output,
+                                  const uint4* __restrict__    pyramid,
+                                  const float* __restrict__    field,
+                                  const uint8_t* __restrict__  index_cases,
+                                  const uint8_t* __restrict__  index_table,
+                                  const size_t                 field_row_stride,
+                                  const size_t                 field_slice_stride,
+                                  const uint3                  field_offset,
+                                  const uint3                  field_max_index,
+                                  const uint32_t               output_count,
+                                  const uint2                  chunks,
+                                  const float3                 scale,
+                                  const float                  threshold)
+  {
 
     uint32_t ix = blockDim.x * blockIdx.x + threadIdx.x;
     if (ix < output_count) {
-      uint32_t key = ix;
-      // Traverse apex
-      uint32_t offset = 0;
-      offset = processHP5Item(key, 0, pyramid[9]);
-      offset = processHP5Item(key, 5 * offset, pyramid[10 + offset]);
-      offset = processHP5Item(key, 5 * offset, pyramid[15 + offset]);
-      for (unsigned l = level_count - 4; l < level_count; l--) {
-        offset = processHP5Item(key, 5 * offset, pyramid[level_offset[l] + offset]);
-      }
+      const uint32_t* level_offset = (const uint32_t*)(pyramid);
 
-      uint8_t index_case = index_cases[offset];
-      uint8_t index_code = index_table[16u * index_case + key];
-      uint32_t q = offset / 800;
+      hp5_result r = traverseDown(pyramid, level_offset, level_offset[15], ix);
 
-      uint3 chunk = make_uint3(q % chunks.x,
-                               (q / chunks.x) % chunks.y,
-                               (q / chunks.x) / chunks.y);
-
-      uint32_t r = offset % 800;
-      uint3 p0 = make_uint3(31 * chunk.x + ((r / 5) % 32),
-                            5 * chunk.y + ((r % 5)),
-                            5 * chunk.z + ((r / 5) / 32));
+      uint8_t index_case = index_cases[r.offset];
+      uint8_t index_code = index_table[16u * index_case + r.remainder];
+      uint3 p0 = decodeCellPosition(chunks, r.offset);
+        
       p0.x += (index_code >> 3) & 1;
       p0.y += (index_code >> 4) & 1;
       p0.z += (index_code >> 5) & 1;
-
-      uint3 q0 = make_uint3(p0.x + field_offset.x,
-                            p0.y + field_offset.y,
-                            p0.z + field_offset.z);
-      size_t o0 = q0.x + q0.y * field_row_stride + q0.z * field_slice_stride;
-      float f0 = field[o0];
-      float f0x = field[o0 + (q0.x < field_size.x ? 1 : 0)];
-      float f0y = field[o0 + (q0.y < field_size.y ? field_row_stride : 0)];
-      float f0z = field[o0 + (q0.z < field_size.z ? field_slice_stride : 0)];
-
       uint3 p1 = p0;
       p1.x += (index_code >> 0) & 1;
       p1.y += (index_code >> 1) & 1;
       p1.z += (index_code >> 2) & 1;
 
-      uint3 q1 = make_uint3(p1.x + field_offset.x,
-                            p1.y + field_offset.y,
-                            p1.z + field_offset.z);
-
-      size_t o1 = q1.x + q1.y * field_row_stride + q1.z * field_slice_stride;
-      float f1 = field[o1];
-      float f1x = field[o1 + (q1.x < field_size.x ? 1 : 0)];
-      float f1y = field[o1 + (q1.y < field_size.y ? field_row_stride : 0)];
-      float f1z = field[o1 + (q1.z < field_size.z ? field_slice_stride : 0)];
-
-      float t = (threshold - f0) / (f1 - f0);
-
-      float nx = scale.x * ((1.f - t) * f0x + t * f1x - threshold);
-      float ny = scale.y * ((1.f - t) * f0y + t * f1y - threshold);
-      float nz = scale.z * ((1.f - t) * f0z + t * f1z - threshold);
-      float nn = __frsqrt_rn(nx * nx + ny * ny + nz * nz);
-
-      output[6 * ix + 0] = scale.x * ((1.f - t) * p0.x + t * p1.x);
-      output[6 * ix + 1] = scale.y * ((1.f - t) * p0.y + t * p1.y);
-      output[6 * ix + 2] = scale.z * ((1.f - t) * p0.z + t * p1.z);
-      output[6 * ix + 3] = nn * nx;
-      output[6 * ix + 4] = nn * ny;
-      output[6 * ix + 5] = nn * nz;
+      emitVertexNormal(output + 6 * ix,
+                       field,
+                       scale,
+                       field_offset,
+                       field_max_index,
+                       field_row_stride,
+                       field_slice_stride,
+                       threshold,
+                       p0,
+                       p1);
     }
   }
 
@@ -355,26 +419,47 @@ namespace {
                                   const uint2                  chunks,
                                   const float3                 scale,
                                   const float                  threshold,
-                                  bool                         alwaysExtract)
+                                  bool                         alwaysExtract,
+                                  bool                         indexed)
   {
     if (threadIdx.x == 0) {
       uint32_t output_count_clamped = min(output_count, pyramid[8].x);
       if (output_count_clamped) {
-        extractPN << <(output_count_clamped + 255) / 256, 256 >> > (output,
-                                                                    pyramid,
-                                                                    field,
-                                                                    index_cases,
-                                                                    index_table,
-                                                                    field_row_stride,
-                                                                    field_slice_stride,
-                                                                    field_offset,
-                                                                    make_uint3(field_size.x - 1,
-                                                                               field_size.y - 1,
-                                                                               field_size.z - 1),
-                                                                    output_count_clamped,
-                                                                    chunks,
-                                                                    scale,
-                                                                    threshold);
+        if (indexed) {
+          extractVertexPN <<<(output_count_clamped + 255) / 256, 256 >> > (output,
+                                                                                 pyramid,
+                                                                                 field,
+                                                                                 index_cases,
+                                                                                 index_table,
+                                                                                 field_row_stride,
+                                                                                 field_slice_stride,
+                                                                                 field_offset,
+                                                                                 make_uint3(field_size.x - 1,
+                                                                                             field_size.y - 1,
+                                                                                             field_size.z - 1),
+                                                                                 output_count_clamped,
+                                                                                 chunks,
+                                                                                 scale,
+                                                                                 threshold);
+
+        }
+        else {
+          extractVertexPN<<<(output_count_clamped + 255) / 256, 256>>>(output,
+                                                                       pyramid,
+                                                                       field,
+                                                                       index_cases,
+                                                                       index_table,
+                                                                       field_row_stride,
+                                                                       field_slice_stride,
+                                                                       field_offset,
+                                                                       make_uint3(field_size.x - 1,
+                                                                                  field_size.y - 1,
+                                                                                  field_size.z - 1),
+                                                                       output_count_clamped,
+                                                                       chunks,
+                                                                       scale,
+                                                                       threshold);
+        }
       }
     }
   }
@@ -554,6 +639,7 @@ void ComputeStuff::MC::buildPN(Context* ctx,
                                                         1.f / ctx->cells.y,
                                                         1.f / ctx->cells.z),
                                             threshold,
-                                            alwaysExtract);
+                                            alwaysExtract,
+                                            ctx->indexed);
 }
 }
