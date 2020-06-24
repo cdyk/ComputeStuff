@@ -14,33 +14,24 @@ namespace {
 
 
   template<typename T>
-  __device__ uint2 fetch(const T* ptr, const T* end, const size_t stride, const float t, unsigned thread)
+  __device__ float2 fetch(const T* ptr, const T* end, const size_t stride, const float t, unsigned thread)
   {
-    auto qtr = ptr;
-    unsigned t0 = ((ptr < end) && (ptr[0] < t) ? 1 : 0);
-    ptr += stride;
-    t0 |= ((ptr < end) && (ptr[0] < t) ? (1<<8) : 0);
-    ptr += stride;
-    t0 |= ((ptr < end) && (ptr[0] < t) ? (1<<16) : 0);
-    ptr += stride;
-    t0 |= ((ptr < end) && (ptr[0] < t) ? (1<<24) : 0);
-    ptr += stride;
+    float t0 = ((ptr < end) && (ptr[0] < t) ? 1.f : 0.f); ptr += stride;
+    float t1 = ((ptr < end) && (ptr[0] < t) ? 1.f : 0.f); ptr += stride;
+    float t2 = ((ptr < end) && (ptr[0] < t) ? 1.f : 0.f); ptr += stride;
+    float t3 = ((ptr < end) && (ptr[0] < t) ? 1.f : 0.f); ptr += stride;
+    float t4 = ((ptr < end) && (ptr[0] < t) ? 1.f : 0.f); ptr += stride;
+    float t5 = ((ptr < end) && (ptr[0] < t) ? 1.f : 0.f); ptr += stride;
 
-    unsigned t1 = (t0 >> 24) | ((ptr < end) && (ptr[0] < t) ? (1<<8) : 0);
-    ptr += stride;
-    t1 |= ((ptr < end) && (ptr[0] < t) ? (1<<16) : 0);
-    ptr += stride;
-
-    unsigned r0 = t0;// (t0 << 0) | (t1 << 8) | (t2 << 16) | (t3 << 24);
-    unsigned r1 = t1;// (t3 << 0) | (t4 << 8) | (t5 << 16);
-
-    return make_uint2( r0, r1 );
+    float r0 = __fmaf_rn(float(1 << 16), t2, __fmaf_rn(float(1 << 8), t1, t0));
+    float r1 = __fmaf_rn(float(1 << 16), t5, __fmaf_rn(float(1 << 8), t4, t3));
+    return make_float2( r0, r1 );
   }
 
-  __device__ uint2 mergeZ(const uint2 z0, const uint2 z1)
+  __device__ float2 mergeZ(const float2 z0, const float2 z1)
   {
-    return make_uint2((z1.x << 4) | (z0.x),
-                      (z1.y << 4) | (z0.y));
+    return make_float2(__fmaf_rn(float(1 << 4), z1.x, z0.x),
+                       __fmaf_rn(float(1 << 4), z1.y, z0.y));
   }
 
   
@@ -76,7 +67,7 @@ namespace {
                          + cell.z * field_slice_stride
                          + cell.y * field_row_stride
                          + cell.x;
-    uint2 prev = fetch(ptr, field_end_d, field_row_stride, threshold, thread);
+    float2 prev = fetch(ptr, field_end_d, field_row_stride, threshold, thread);
     ptr += field_slice_stride;
 
     bool xmask = cell.x < cells.x;
@@ -85,27 +76,28 @@ namespace {
       unsigned sum = 0;
       bool zmask = cell.z < cells.z;
       if (zmask) {
-        uint2 next = fetch(ptr, field_end_d, field_row_stride, threshold, thread);
+        float2 next = fetch(ptr, field_end_d, field_row_stride, threshold, thread);
         ptr += field_slice_stride;
 
-        uint2 cases_ = mergeZ(prev, next);
+        float2 cases_ = mergeZ(prev, next);
         prev = next;
 
-        unsigned r0 = cases_.x;
-        unsigned r1 = cases_.y;
-        unsigned s0 = __shfl_down_sync(0xffffffff, r0, 1);
-        unsigned s1 = __shfl_down_sync(0xffffffff, r1, 1);
+        float2 tt = make_float2(__shfl_down_sync(0xffffffff, cases_.x, 1),
+                                __shfl_down_sync(0xffffffff, cases_.y, 1));
+
         if (xmask && thread < 31) {
-          r0 = r0 | (s0 << 1);
-          r1 = r1 | (s1 << 1);
-          r0 = r0 | (r0 >> 6);
-          r1 = r1 | (r1 >> 6);
+          uint32_t g0 = static_cast<uint32_t>(__fmaf_rn(2.f, tt.x, cases_.x));
+          uint32_t g1 = static_cast<uint32_t>(__fmaf_rn(2.f, tt.y, cases_.y));
+          uint32_t s0 = __byte_perm(g0, g1, (4 << 12) | (2 << 8) | (1 << 4) | (0 << 0));
+          g0 = g0 | (s0 >> 6);
+          g1 = g1 | (g1 >> 6);
+
           uint5 cases = {
-            (r0 >> 0) & 0xff,
-            (r0 >> 8) & 0xff,
-            (r0 >> 16) & 0xff,
-            (r1 >> 0) & 0xff,
-            (r1 >> 8) & 0xff
+            __byte_perm(g0, 0, (4 << 12) | (4 << 8) | (4 << 4) | (0 << 0)),
+            __byte_perm(g0, 0, (4 << 12) | (4 << 8) | (4 << 4) | (1 << 0)),
+            __byte_perm(g0, 0, (4 << 12) | (4 << 8) | (4 << 4) | (2 << 0)),
+            __byte_perm(g1, 0, (4 << 12) | (4 << 8) | (4 << 4) | (0 << 0)),
+            __byte_perm(g1, 0, (4 << 12) | (4 << 8) | (4 << 4) | (1 << 0))
           };
 
           uint5 counts{
