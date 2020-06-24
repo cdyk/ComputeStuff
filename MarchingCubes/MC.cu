@@ -12,70 +12,38 @@ namespace {
     uint32_t e4;
   };
 
-  struct uint6 {
-    uint32_t e0;
-    uint32_t e1;
-    uint32_t e2;
-    uint32_t e3;
-    uint32_t e4;
-    uint32_t e5;
-  };
 
   template<typename T>
-  __device__ uint6 fetch(const T* ptr, const T* end, const size_t stride, const float t, unsigned thread)
+  __device__ uint2 fetch(const T* ptr, const T* end, const size_t stride, const float t, unsigned thread)
   {
     auto qtr = ptr;
     unsigned t0 = ((ptr < end) && (ptr[0] < t) ? 1 : 0);
     ptr += stride;
-    unsigned t1 = ((ptr < end) && (ptr[0] < t) ? 1 : 0);
+    t0 |= ((ptr < end) && (ptr[0] < t) ? (1<<8) : 0);
     ptr += stride;
-    unsigned t2 = ((ptr < end) && (ptr[0] < t) ? 1 : 0);
+    t0 |= ((ptr < end) && (ptr[0] < t) ? (1<<16) : 0);
     ptr += stride;
-    unsigned t3 = ((ptr < end) && (ptr[0] < t) ? 1 : 0);
-    ptr += stride;
-    unsigned t4 = ((ptr < end) && (ptr[0] < t) ? 1 : 0);
-    ptr += stride;
-    unsigned t5 = ((ptr < end) && (ptr[0] < t) ? 1 : 0);
+    t0 |= ((ptr < end) && (ptr[0] < t) ? (1<<24) : 0);
     ptr += stride;
 
-    unsigned q0 = __shfl_down_sync(0xffffffff, t0, 1);
-    unsigned q1 = __shfl_down_sync(0xffffffff, t1, 1);
-    unsigned q2 = __shfl_down_sync(0xffffffff, t2, 1);
-    unsigned q3 = __shfl_down_sync(0xffffffff, t3, 1);
-    unsigned q4 = __shfl_down_sync(0xffffffff, t4, 1);
-    unsigned q5 = __shfl_down_sync(0xffffffff, t5, 1);
+    unsigned t1 = (t0 >> 24) | ((ptr < end) && (ptr[0] < t) ? (1<<8) : 0);
+    ptr += stride;
+    t1 |= ((ptr < end) && (ptr[0] < t) ? (1<<16) : 0);
+    ptr += stride;
 
-    t0 = t0 | (q0 << 1);
-    t1 = t1 | (q1 << 1);
-    t2 = t2 | (q2 << 1);
-    t3 = t3 | (q3 << 1);
-    t4 = t4 | (q4 << 1);
-    t5 = t5 | (q5 << 1);
-    return { t0, t1, t2, t3, t4, t5 };
+    unsigned r0 = t0;// (t0 << 0) | (t1 << 8) | (t2 << 16) | (t3 << 24);
+    unsigned r1 = t1;// (t3 << 0) | (t4 << 8) | (t5 << 16);
+
+    return make_uint2( r0, r1 );
   }
 
-  __device__ uint6 mergeZ(const uint6 z0, const uint6 z1)
+  __device__ uint2 mergeZ(const uint2 z0, const uint2 z1)
   {
-    return {
-      (z1.e0 << 4) | (z0.e0),
-      (z1.e1 << 4) | (z0.e1),
-      (z1.e2 << 4) | (z0.e2),
-      (z1.e3 << 4) | (z0.e3),
-      (z1.e4 << 4) | (z0.e4),
-      (z1.e5 << 4) | (z0.e5),
-    };
+    return make_uint2((z1.x << 4) | (z0.x),
+                      (z1.y << 4) | (z0.y));
   }
 
-  __device__ uint5 mergeY(const uint6 y) {
-    return {
-      (y.e1 << 2) | (y.e0),
-      (y.e2 << 2) | (y.e1),
-      (y.e3 << 2) | (y.e2),
-      (y.e4 << 2) | (y.e3),
-      (y.e5 << 2) | (y.e4),
-    };
-  }
-
+  
   template<class FieldType>
   __global__ __launch_bounds__(32) void reduce_base(uint8_t* __restrict__           index_cases_d,
                                                     uint4*   __restrict__           out_level0_d,
@@ -108,7 +76,7 @@ namespace {
                          + cell.z * field_slice_stride
                          + cell.y * field_row_stride
                          + cell.x;
-    uint6 prev = fetch(ptr, field_end_d, field_row_stride, threshold, thread);
+    uint2 prev = fetch(ptr, field_end_d, field_row_stride, threshold, thread);
     ptr += field_slice_stride;
 
     bool xmask = cell.x < cells.x;
@@ -117,13 +85,28 @@ namespace {
       unsigned sum = 0;
       bool zmask = cell.z < cells.z;
       if (zmask) {
-        uint6 next = fetch(ptr, field_end_d, field_row_stride, threshold, thread);
+        uint2 next = fetch(ptr, field_end_d, field_row_stride, threshold, thread);
         ptr += field_slice_stride;
+
+        uint2 cases_ = mergeZ(prev, next);
+        prev = next;
+
+        unsigned r0 = cases_.x;
+        unsigned r1 = cases_.y;
+        unsigned s0 = __shfl_down_sync(0xffffffff, r0, 1);
+        unsigned s1 = __shfl_down_sync(0xffffffff, r1, 1);
         if (xmask && thread < 31) {
-
-
-          uint5 cases = mergeY(mergeZ(prev, next));
-          prev = next;
+          r0 = r0 | (s0 << 1);
+          r1 = r1 | (s1 << 1);
+          r0 = r0 | (r0 >> 6);
+          r1 = r1 | (r1 >> 6);
+          uint5 cases = {
+            (r0 >> 0) & 0xff,
+            (r0 >> 8) & 0xff,
+            (r0 >> 16) & 0xff,
+            (r1 >> 0) & 0xff,
+            (r1 >> 8) & 0xff
+          };
 
           uint5 counts{
             cell.y + 0u < cells.y ? index_count[cases.e0] : 0u,
