@@ -464,8 +464,6 @@ ComputeStuff::MC::Context* ComputeStuff::MC::createContext(const Tables* tables,
   CHECKED_CUDA(cudaHostAlloc(&ctx->sum_h, sizeof(uint32_t), cudaHostAllocMapped));
   CHECKED_CUDA(cudaHostGetDevicePointer(&ctx->sum_d, ctx->sum_h, 0));
 
-  CHECKED_CUDA(cudaEventCreateWithFlags(&ctx->countWritten, cudaEventBlockingSync));
-
   return ctx;
 }
 
@@ -474,9 +472,12 @@ void ComputeStuff::MC::destroyContext(Context* ctx)
   delete ctx;
 }
 
-void ComputeStuff::MC::getCounts(Context* ctx, uint32_t* vertices, uint32_t* indices)
+void ComputeStuff::MC::getCounts(Context* ctx, uint32_t* vertices, uint32_t* indices, cudaStream_t stream)
 {
-  CHECKED_CUDA(cudaEventSynchronize(ctx->countWritten));
+  // When reduce_apex kernel finishes, ctx->sum_h[0] contains the number of vertices. Just
+  // sync'ing on the stream further down is slightly faster than adding an event
+  // here and blocking on it in here. 
+  CHECKED_CUDA(cudaStreamSynchronize(stream));
   *vertices = *ctx->sum_h;
 }
 
@@ -521,7 +522,6 @@ void ComputeStuff::MC::buildPN(Context* ctx,
                                               ctx->sum_d,
                                               ctx->sidebands[sb ? 0 : 1],
                                               ctx->level_sizes[ctx->levels - 4]);
-    CHECKED_CUDA(cudaEventRecord(ctx->countWritten, stream));
   }
 
   if (output_buffer) {

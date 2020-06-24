@@ -937,7 +937,7 @@ int main(int argc, char** argv)
                                 false);
       CHECKED_CUDA(cudaEventRecord(events[2 * eventCounter + 1], stream));
       CHECKED_CUDA(cudaGraphicsUnmapResources(1, &bufferResource, stream));
-      ComputeStuff::MC::getCounts(ctx, &vertices, &indices);
+      ComputeStuff::MC::getCounts(ctx, &vertices, &indices, stream);
 
       eventCounter = (eventCounter + 1) & 3;
       float ms = 0;

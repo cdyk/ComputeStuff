@@ -40,10 +40,9 @@ namespace ComputeStuff {
       uint32_t level_sizes[32];   // nunber of uvec4's
       uint32_t level_offsets[32]; // offsets in uvec4's
       uint32_t total_size;
-      cudaEvent_t countWritten;
     };
 
-    void getCounts(Context* ctx, uint32_t* vertices, uint32_t* indices);
+    void getCounts(Context* ctx, uint32_t* vertices, uint32_t* indices, cudaStream_t stream);
 
     Tables* createTables(cudaStream_t stream);
 
