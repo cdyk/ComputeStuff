@@ -22,14 +22,35 @@ namespace {
   };
 
   template<typename T>
-  __device__ uint6 fetch(const T* ptr, const T* end, const size_t stride, const float t)
+  __device__ uint6 fetch(const T* ptr, const T* end, const size_t stride, const float t, unsigned thread)
   {
-    unsigned t0 = ((ptr < end) && (ptr[0] < t) ? 1 : 0) | ((ptr <= end) && (ptr[1] < t) ? 2 : 0); ptr += stride;
-    unsigned t1 = ((ptr < end) && (ptr[0] < t) ? 1 : 0) | ((ptr <= end) && (ptr[1] < t) ? 2 : 0); ptr += stride;
-    unsigned t2 = ((ptr < end) && (ptr[0] < t) ? 1 : 0) | ((ptr <= end) && (ptr[1] < t) ? 2 : 0); ptr += stride;
-    unsigned t3 = ((ptr < end) && (ptr[0] < t) ? 1 : 0) | ((ptr <= end) && (ptr[1] < t) ? 2 : 0); ptr += stride;
-    unsigned t4 = ((ptr < end) && (ptr[0] < t) ? 1 : 0) | ((ptr <= end) && (ptr[1] < t) ? 2 : 0); ptr += stride;
-    unsigned t5 = ((ptr < end) && (ptr[0] < t) ? 1 : 0) | ((ptr <= end) && (ptr[1] < t) ? 2 : 0); ptr += stride;
+    auto qtr = ptr;
+    unsigned t0 = ((ptr < end) && (ptr[0] < t) ? 1 : 0);
+    ptr += stride;
+    unsigned t1 = ((ptr < end) && (ptr[0] < t) ? 1 : 0);
+    ptr += stride;
+    unsigned t2 = ((ptr < end) && (ptr[0] < t) ? 1 : 0);
+    ptr += stride;
+    unsigned t3 = ((ptr < end) && (ptr[0] < t) ? 1 : 0);
+    ptr += stride;
+    unsigned t4 = ((ptr < end) && (ptr[0] < t) ? 1 : 0);
+    ptr += stride;
+    unsigned t5 = ((ptr < end) && (ptr[0] < t) ? 1 : 0);
+    ptr += stride;
+
+    unsigned q0 = __shfl_down_sync(0xffffffff, t0, 1);
+    unsigned q1 = __shfl_down_sync(0xffffffff, t1, 1);
+    unsigned q2 = __shfl_down_sync(0xffffffff, t2, 1);
+    unsigned q3 = __shfl_down_sync(0xffffffff, t3, 1);
+    unsigned q4 = __shfl_down_sync(0xffffffff, t4, 1);
+    unsigned q5 = __shfl_down_sync(0xffffffff, t5, 1);
+
+    t0 = t0 | (q0 << 1);
+    t1 = t1 | (q1 << 1);
+    t2 = t2 | (q2 << 1);
+    t3 = t3 | (q3 << 1);
+    t4 = t4 | (q4 << 1);
+    t5 = t5 | (q5 << 1);
     return { t0, t1, t2, t3, t4, t5 };
   }
 
@@ -76,7 +97,7 @@ namespace {
     uint3 chunk = make_uint3(chunk_ix % chunks.x,
                             (chunk_ix / chunks.x) % chunks.y,
                             (chunk_ix / chunks.x) / chunks.y);
-    uint3 cell = make_uint3(32 * chunk.x + thread,
+    uint3 cell = make_uint3(31 * chunk.x + thread,
                             5 * chunk.y,
                             5 * chunk.z);
 
@@ -87,7 +108,7 @@ namespace {
                          + cell.z * field_slice_stride
                          + cell.y * field_row_stride
                          + cell.x;
-    uint6 prev = fetch(ptr, field_end_d, field_row_stride, threshold);
+    uint6 prev = fetch(ptr, field_end_d, field_row_stride, threshold, thread);
     ptr += field_slice_stride;
 
     bool xmask = cell.x < cells.x;
@@ -95,35 +116,37 @@ namespace {
 
       unsigned sum = 0;
       bool zmask = cell.z < cells.z;
-      if (xmask && zmask) {
-
-        uint6 next = fetch(ptr, field_end_d, field_row_stride, threshold);
+      if (zmask) {
+        uint6 next = fetch(ptr, field_end_d, field_row_stride, threshold, thread);
         ptr += field_slice_stride;
+        if (xmask && thread < 31) {
 
-        uint5 cases = mergeY(mergeZ(prev, next));
-        prev = next;
 
-        uint5 counts{
-          cell.y + 0u < cells.y ? index_count[cases.e0] : 0u,
-          cell.y + 1u < cells.y ? index_count[cases.e1] : 0u,
-          cell.y + 2u < cells.y ? index_count[cases.e2] : 0u,
-          cell.y + 3u < cells.y ? index_count[cases.e3] : 0u,
-          cell.y + 4u < cells.y ? index_count[cases.e4] : 0u,
-        };
+          uint5 cases = mergeY(mergeZ(prev, next));
+          prev = next;
 
-        sum = counts.e0 + counts.e1 + counts.e2 + counts.e3 + counts.e4;
+          uint5 counts{
+            cell.y + 0u < cells.y ? index_count[cases.e0] : 0u,
+            cell.y + 1u < cells.y ? index_count[cases.e1] : 0u,
+            cell.y + 2u < cells.y ? index_count[cases.e2] : 0u,
+            cell.y + 3u < cells.y ? index_count[cases.e3] : 0u,
+            cell.y + 4u < cells.y ? index_count[cases.e4] : 0u,
+          };
 
-        if (sum) {
-          // MC cases and HP base level is only visited if sum is nonzero
-          index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 0] = cases.e0;
-          index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 1] = cases.e1;
-          index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 2] = cases.e2;
-          index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 3] = cases.e3;
-          index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 4] = cases.e4;
-          out_level0_d[32 * 5 * blockIdx.x + 32 * y + thread] = make_uint4(counts.e0,
-                                                                           counts.e0 + counts.e1,
-                                                                           counts.e0 + counts.e1 + counts.e2,
-                                                                           counts.e0 + counts.e1 + counts.e2 + counts.e3);
+          sum = counts.e0 + counts.e1 + counts.e2 + counts.e3 + counts.e4;
+
+          if (sum) {
+            // MC cases and HP base level is only visited if sum is nonzero
+            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 0] = cases.e0;
+            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 1] = cases.e1;
+            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 2] = cases.e2;
+            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 3] = cases.e3;
+            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 4] = cases.e4;
+            out_level0_d[32 * 5 * blockIdx.x + 32 * y + thread] = make_uint4(counts.e0,
+                                                                             counts.e0 + counts.e1,
+                                                                             counts.e0 + counts.e1 + counts.e2,
+                                                                             counts.e0 + counts.e1 + counts.e2 + counts.e3);
+          }
         }
       }
       cell.z++;
@@ -296,7 +319,7 @@ namespace {
                                (q / chunks.x) / chunks.y);
 
       uint32_t r = offset % 800;
-      uint3 p0 = make_uint3(32 * chunk.x + ((r/5) % 32),
+      uint3 p0 = make_uint3(31 * chunk.x + ((r/5) % 32),
                              5 * chunk.y + ((r % 5)),
                              5 * chunk.z + ((r / 5) / 32));
       p0.x += (index_code >> 3) & 1;
@@ -411,7 +434,7 @@ ComputeStuff::MC::Context* ComputeStuff::MC::createContext(const Tables* tables,
   fprintf(stderr, "Cells [%u x %u x %u]\n", ctx->cells.x, ctx->cells.y, ctx->cells.z);
 
   // Each chunk handles a set of 32 x 5 x 5 cells.
-  ctx->chunks = make_uint3(((cells.x + 31) / 32),
+  ctx->chunks = make_uint3(((cells.x + 30) / 31),
                            ((cells.y + 4) / 5),
                            ((cells.z + 4) / 5));
   ctx->chunk_total = ctx->chunks.x* ctx->chunks.y* ctx->chunks.z;
