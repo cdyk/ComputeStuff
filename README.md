@@ -11,6 +11,7 @@ MIT-licensed stand-alone CUDA utility functions.
       - [Write sum](#write-sum)
       - [Concurrent invocations](#concurrent-invocations)
     - [In-place operation](#in-place-operation)
+  - [HP5 Marching Cubes](#hp5-marching-cubes)
   - [Prefix sum / Scan](#prefix-sum--scan)
     - [Performance](#performance)
   - [5:1 HistoPyramids](#51-histopyramids)
@@ -47,15 +48,15 @@ Press "Configure" button and select 64bit VS2017. Open libs\glfw\build\GLFW.sln 
 
 ### How to use
 
-Each of the components is fully contained in its own project (currently [Scan project](Scan/Scan.vcxproj) and [HP5 project](HP5/HP5.vcxproj)). To use the code, either link against the static library produced by the project you want to use, or just add the files in the project to your project.
+Each of the components is fully contained in its own project (currently [Scan project](Scan/Scan.vcxproj), [HP5 project](HP5/HP5.vcxproj), and [MarchingCubes project](MarchingCubes/MarchingCubes.vcxproj)). To use the code, either link against the static library produced by the project you want to use, or just add the files in the project to your project.
 
 Typically these projects contains a header file with the public API and one or more source files with the implementation.
 
-In addition, each component have a test project (currently [ScanTest project](ScanTest/ScanTest.vcxproj) and [HP5Test project](HP5Test/HP5Test.vcxproj)) that serves as a combined unit and performance test as well as an example of use.
+In addition, each component have a test project (currently [ScanTest project](ScanTest/ScanTest.vcxproj), [HP5Test project](HP5Test/HP5Test.vcxproj), and [MarchingCubesTest project](MarchingCubesTest/MarchingCubesTest.vcxproj)) that serves as a combined unit and performance test as well as an example of use.
 
 #### Compute capability
 
-Code in ComputeStuff uses the Kepler warp-shuffle instructions, and therefore the **minimum supported compute capability is 3.0**. It is straight-forward to replace the use of shuffle with use of shared memory, at the expense of some more instructions, and lowering this requirement.
+Code in ComputeStuff uses the Kepler warp-shuffle instructions, and therefore the **minimum supported compute capability is 3.0**. It is straight-forward to replace the use of shuffle with use of shared memory, at the expense of some more instructions, and lowering this requirement. The marching cubes code requires compute capability 3.5.
 
 
 #### Scratch buffer
@@ -120,6 +121,15 @@ For scan, an example is:
 ComputeStuff::Scan::exclusiveScan(inout_d, scratch_d, inout_d, N);
 // inout_d contains the output of N elements
 ````
+
+## HP5 Marching cubes
+
+This code-base includes a re-implementation of [GPU Accelerated Data Expansion Marching Cubes Algorithm](http://on-demand.gputechconf.com/gtc/2010/presentations/S12020-GPU-Accelerated-Data-Expansion-Marching-Cubes-Algorithm.pdf) from GTC 2010.
+
+The code is **work-in-progress** and is not fully optimized (in particular, it lacks fusion of reduction steps, and the HP5 traversal needs some care). But it works.
+
+Currently only un-indexed meshes are produced, a version producing indexed meshes is underway.
+
 
 ## Prefix sum / Scan
 
@@ -230,6 +240,9 @@ Ratio is the time HP5 uses compared to Scan (lower is better for HP5's case). Th
 ## Credits
 
 The ComputeStuff implementation was initially written and is maintained by Christopher Dyken, with contributions from Gernot Ziegler.
+
+The marching cubes tables used here is based on the [Marching Cubes Example Program](http://paulbourke.net/geometry/polygonise/marchingsource.cpp) by Cory Bloyd, released to the Public Domain.
+
 
 ## License
 

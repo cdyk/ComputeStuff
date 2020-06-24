@@ -1,3 +1,6 @@
+// This file is part of ComputeStuff copyright (C) 2020 Christopher Dyken.
+// Released under the MIT license, please see LICENSE file for details.
+
 #include "MC.h"
 #include <cassert>
 #include <cmath>

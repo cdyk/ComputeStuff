@@ -1,30 +1,33 @@
+// This file is part of ComputeStuff copyright (C) 2020 Christopher Dyken.
+// Released under the MIT license, please see LICENSE file for details.
+
 #include <cuda_runtime_api.h>
 #include "MC.h"
 
 namespace {
   // Marching cubes tables.
-//
-// Original table from 'Marching Cubes Example Program` by Cory Bloyd,
-// released to the Public Domain.
-// http://paulbourke.net/geometry/polygonise/marchingsource.cpp
-//
-// Cell corners reorganized such that
-//
-//       6--------7
-//      /|       /|
-//     / |      / |
-//    4--------5  |
-//    |  2-----|--3     z  y
-//    | /      | /      ^ /
-//    |/       |/       |/
-//    0--------1        --->x
-//
-// Triangle indices are encoded such that bits 3, 4 and 5 tells the shift
-// along X, Y and Z respectively for the first end of the edge, and from
-// that, bits 0, 1, and 2 tells which of the X, Y and Z axes to follow, i.e.,
-// only one of the bits 0, 1, and 2 is set. Another invariant is that a
-// valid edge index is never zero.
-//
+  //
+  // Original table from 'Marching Cubes Example Program` by Cory Bloyd,
+  // released to the Public Domain.
+  // http://paulbourke.net/geometry/polygonise/marchingsource.cpp
+  //
+  // Cell corners reorganized such that
+  //
+  //       6--------7
+  //      /|       /|
+  //     / |      / |
+  //    4--------5  |
+  //    |  2-----|--3     z  y
+  //    | /      | /      ^ /
+  //    |/       |/       |/
+  //    0--------1        --->x
+  //
+  // Triangle indices are encoded such that bits 3, 4 and 5 tells the shift
+  // along X, Y and Z respectively for the first end of the edge, and from
+  // that, bits 0, 1, and 2 tells which of the X, Y and Z axes to follow, i.e.,
+  // only one of the bits 0, 1, and 2 is set. Another invariant is that a
+  // valid edge index is never zero.
+  //
   const uint8_t index_count[256] = {
     0, 3, 3, 6, 3, 6, 6, 9, 3, 6, 6, 9, 6, 9, 9, 6,
     3, 6, 6, 9, 6, 9, 9, 12, 6, 9, 9, 12, 9, 12, 12, 9,
