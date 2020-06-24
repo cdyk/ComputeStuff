@@ -1,4 +1,7 @@
 #pragma once
+// This file is part of ComputeStuff copyright (C) 2020 Christopher Dyken.
+// Released under the MIT license, please see LICENSE file for details.
+
 #include <vector>
 #include <cstdint>
 #include <cuda_runtime.h>
@@ -7,13 +10,6 @@
 namespace ComputeStuff {
 
   namespace MC {
-
-    enum struct FieldFormat : uint32_t
-    {
-      UInt8,
-      UInt16,
-      Float
-    };
 
     struct Tables
     {
