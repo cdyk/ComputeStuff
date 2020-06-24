@@ -24,22 +24,26 @@ namespace ComputeStuff {
     struct Context
     {
       const Tables* tables = nullptr;
-      uint8_t* index_cases_d = nullptr;           // 800 * chunk count
-      uint4* pyramid = nullptr;           // baselevel is full grid
-      uint32_t* sidebands[2] = {
-        nullptr,                          // baselevel / 5
-        nullptr                           // baselevel / 5*5
-      };
-      uint32_t* sum_h = nullptr;
-      uint32_t* sum_d = nullptr;
 
-      uint3 cells;
-      uint3 chunks;
-      uint32_t chunk_total = 0;
-      uint32_t levels = 0;
-      uint32_t level_sizes[32];   // nunber of uvec4's
-      uint32_t level_offsets[32]; // offsets in uvec4's
-      uint32_t total_size;
+      uint8_t*      index_cases_d = nullptr;           // 800 * chunk count
+      uint4*        index_pyramid = nullptr;           // baselevel is full grid
+      uint32_t*     index_sidebands[2] = { nullptr, nullptr };
+
+      uint8_t*      vertex_cases_d = nullptr;           // 800 * chunk count
+      uint4*        vertex_pyramid = nullptr;           // baselevel is full grid
+      uint32_t*     vertex_sidebands[2] = { nullptr, nullptr };
+
+      uint32_t*     sum_h = nullptr;
+      uint32_t*     sum_d = nullptr;
+      uint3         cells;
+      uint3         chunks;
+      uint32_t      chunk_total = 0;
+      uint32_t      levels = 0;
+      uint32_t      level_sizes[16];   // nunber of uvec4's
+      uint32_t      level_offsets[16]; // offsets in uvec4's
+      uint32_t      total_size;
+
+      bool          indexed = false;
     };
 
     void getCounts(Context* ctx, uint32_t* vertices, uint32_t* indices, cudaStream_t stream);
@@ -48,6 +52,7 @@ namespace ComputeStuff {
 
     Context* createContext(const Tables* tables,
                            uint3 cells,
+                           bool indexed,
                            cudaStream_t stream);
 
     void buildPN(Context* ctx,

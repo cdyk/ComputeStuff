@@ -844,7 +844,7 @@ int main(int argc, char** argv)
 
 
   auto* tables = createTables(stream);
-  auto* ctx = createContext(tables, make_uint3(nx-1, ny-1, nz-1), stream);
+  auto* ctx = createContext(tables, make_uint3(nx-1, ny-1, nz-1), true, stream);
 
   
 
