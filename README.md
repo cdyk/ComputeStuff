@@ -11,6 +11,7 @@ MIT-licensed stand-alone CUDA utility functions.
       - [Write sum](#write-sum)
       - [Concurrent invocations](#concurrent-invocations)
     - [In-place operation](#in-place-operation)
+  - [HP5 Marching Cubes](#hp5-marching-cubes)
   - [Prefix sum / Scan](#prefix-sum--scan)
     - [Performance](#performance)
   - [5:1 HistoPyramids](#51-histopyramids)
