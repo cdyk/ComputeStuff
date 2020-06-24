@@ -113,16 +113,18 @@ namespace {
 
         sum = counts.e0 + counts.e1 + counts.e2 + counts.e3 + counts.e4;
 
-        // todo: check if sum is nonzero.
-        index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 0] = cases.e0;
-        index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 1] = cases.e1;
-        index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 2] = cases.e2;
-        index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 3] = cases.e3;
-        index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 4] = cases.e4;
-        out_level0_d[32 * 5 * blockIdx.x + 32 * y + thread] = make_uint4(counts.e0,
-                                                                         counts.e0 + counts.e1,
-                                                                         counts.e0 + counts.e1 + counts.e2,
-                                                                         counts.e0 + counts.e1 + counts.e2 + counts.e3);
+        if (sum) {
+          // MC cases and HP base level is only visited if sum is nonzero
+          index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 0] = cases.e0;
+          index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 1] = cases.e1;
+          index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 2] = cases.e2;
+          index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 3] = cases.e3;
+          index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 4] = cases.e4;
+          out_level0_d[32 * 5 * blockIdx.x + 32 * y + thread] = make_uint4(counts.e0,
+                                                                           counts.e0 + counts.e1,
+                                                                           counts.e0 + counts.e1 + counts.e2,
+                                                                           counts.e0 + counts.e1 + counts.e2 + counts.e3);
+        }
       }
       cell.z++;
       out_sideband_d[32 * (5 * blockIdx.x + y) + threadIdx.x] = sum;// t.x + t.y + t.z + t.w + sideband[5 * thread + 4];
@@ -151,11 +153,14 @@ namespace {
                               sb[5 * threadIdx.x + 1],
                               sb[5 * threadIdx.x + 2],
                               sb[5 * threadIdx.x + 3]);
-        hp1_d[offset1] = make_uint4(hp.x,
-                                    hp.x + hp.y,
-                                    hp.x + hp.y + hp.z,
-                                    hp.x + hp.y + hp.z + hp.w);
-        sb1_d[offset1] = hp.x + hp.y + hp.z + hp.w + sb[5 * threadIdx.x + 4];
+        uint32_t sum = hp.x + hp.y + hp.z + hp.w + sb[5 * threadIdx.x + 4];
+        if (sum) {
+          hp1_d[offset1] = make_uint4(hp.x,
+                                      hp.x + hp.y,
+                                      hp.x + hp.y + hp.z,
+                                      hp.x + hp.y + hp.z + hp.w);
+        }
+        sb1_d[offset1] = sum;
       }
     }
   }
