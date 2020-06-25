@@ -704,7 +704,7 @@ int main(int argc, char** argv)
       auto now = std::chrono::high_resolution_clock::now();
       std::chrono::duration<double> elapsed = now - timer;
       auto s = elapsed.count();
-      if (10 < frames && 3.0 < s) {
+      if (10 < frames && 0.5 < s) {
         fprintf(stderr, "%.2f FPS (%.2f MVPS) cuda avg: %.2fms (%.2f MVPS) %ux%ux%u Nv=%u Ni=%u\n",
                 frames / s, (float(frames)* nx *ny * nz) / (1000000.f * s),
                 cuda_ms/frames, (float(frames)* nx* ny* nz) / (1000.f * cuda_ms),

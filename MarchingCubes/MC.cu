@@ -48,6 +48,13 @@ namespace {
         "  popc.b32 %0, t3;\n"          // Count number of 1's (should be 0..3).
         "}"
         : "=r"(n) :"r"(c));
+
+    unsigned m =
+      ((c & 1) ^ ((c >> 1) & 1)) +
+      ((c & 1) ^ ((c >> 2) & 1)) +
+      ((c & 1) ^ ((c >> 4) & 1));
+    assert(n == m);
+    assert(n <= 3);
     return n;
   }
 
@@ -68,7 +75,6 @@ namespace {
   {
     const uint32_t warp = threadIdx.x / 32;
     const uint32_t thread = threadIdx.x % 32;
-
     const uint32_t chunk_ix = blockIdx.x + warp;
 
     uint3 chunk = make_uint3(chunk_ix % chunks.x,
@@ -160,8 +166,8 @@ namespace {
         }
       }
       cell.z++;
-      out_vertex_sideband_d[32 * (5 * blockIdx.x + y) + threadIdx.x] = vsum;// t.x + t.y + t.z + t.w + sideband[5 * thread + 4];
-      out_index_sideband_d[32 * (5 * blockIdx.x + y) + threadIdx.x] = isum;// t.x + t.y + t.z + t.w + sideband[5 * thread + 4];
+      out_vertex_sideband_d[32 * (5 * blockIdx.x + y) + threadIdx.x] = vsum;
+      out_index_sideband_d[32 * (5 * blockIdx.x + y) + threadIdx.x] = isum;
     }
   }
 
@@ -673,7 +679,7 @@ void ComputeStuff::MC::buildPN(Context* ctx,
                                              ctx->level_sizes[i],                           // Number of uvec4's in level i
                                              ctx->index_sidebands[sb ? 0 : 1],              // Input, each block will read 5*32=160 values from here
                                              ctx->level_sizes[i - 1]);                      // Number of sideband elements from level i-1
-      if (false &&ctx->indexed) {
+      if (ctx->indexed) {
         reduce1<<<blocks, 5 * 32, 0, stream>>>(ctx->vertex_pyramid + ctx->level_offsets[i], // Each block will write 32 uvec4's into this
                                                ctx->vertex_sidebands[sb ? 1 : 0],           // Each block will write 32 uint32's into this
                                                ctx->level_sizes[i],                         // Number of uvec4's in level i
