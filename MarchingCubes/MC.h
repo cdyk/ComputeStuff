@@ -31,7 +31,7 @@ namespace ComputeStuff {
 
       uint32_t*     sum_h = nullptr;
       uint32_t*     sum_d = nullptr;
-      uint3         cells;
+      uint3         grid_size;
       uint3         chunks;
       uint32_t      chunk_total = 0;
       uint32_t      levels = 0;

@@ -31,11 +31,6 @@ namespace {
     return make_float2(r0, r1);
   }
 
-  __device__ float2 mergeZ(const float2 z0, const float2 z1)
-  {
-    return make_float2(__fmaf_rn(float(1 << 4), z1.x, z0.x),
-                       __fmaf_rn(float(1 << 4), z1.y, z0.y));
-  }
   __device__ __forceinline__ uint32_t piercingAxesFromCase(uint32_t c)
   {
     return ((((c & 1) << 1) |
@@ -80,7 +75,7 @@ namespace {
                                                           const size_t                    field_slice_stride,
                                                           const float                     threshold,
                                                           const uint3                     chunks,
-                                                          const uint3                     cells)
+                                                          const uint3                     cell_max_index)
   {
     const uint32_t warp = threadIdx.x / 32;
     const uint32_t thread = threadIdx.x % 32;
@@ -97,18 +92,17 @@ namespace {
 
     // One warp processes a 32 * 5 * 5 chunk, outputs 800 mc cases to base level and 800/5=160 sums to sideband.
     const FieldType* ptr = field_d
-      + cell.z * field_slice_stride
-      + cell.y * field_row_stride
-      + cell.x;
+                         + cell.z * field_slice_stride
+                         + cell.y * field_row_stride
+                         + min(cell_max_index.x, cell.x);
     float2 prev = fetch(ptr, field_end_d, field_row_stride, threshold, thread);
     ptr += field_slice_stride;
 
-    bool xmask = cell.x < cells.x;
     for (unsigned y = 0; y < 5; y++) {
 
       unsigned isum = 0;
       unsigned vsum = 0;
-      bool zmask = cell.z < cells.z;
+      bool zmask = cell.z <= cell_max_index.z;
       if (zmask) {
         float2 next = fetch(ptr, field_end_d, field_row_stride, threshold, thread);
         ptr += field_slice_stride;
@@ -121,7 +115,7 @@ namespace {
         float2 tt = make_float2(__shfl_down_sync(0xffffffff, t0.x, 1),
                                 __shfl_down_sync(0xffffffff, t0.y, 1));
 
-        if (xmask && thread < 31) {
+        if (cell.x <= cell_max_index.x && thread < 31) {
           uint32_t g0 = static_cast<uint32_t>(__fmaf_rn(2.f, tt.x, t0.x));
           uint32_t g1 = static_cast<uint32_t>(__fmaf_rn(2.f, tt.y, t0.y));
           uint32_t s0 = __byte_perm(g0, g1, (4 << 12) | (2 << 8) | (1 << 4) | (0 << 0));
@@ -151,11 +145,11 @@ namespace {
           }
 
           uint5 counts{
-            cell.y + 0u < cells.y ? index_count[cases.e0] : 0u,
-            cell.y + 1u < cells.y ? index_count[cases.e1] : 0u,
-            cell.y + 2u < cells.y ? index_count[cases.e2] : 0u,
-            cell.y + 3u < cells.y ? index_count[cases.e3] : 0u,
-            cell.y + 4u < cells.y ? index_count[cases.e4] : 0u,
+            cell.y + 0u <= cell_max_index.y ? index_count[cases.e0] : 0u,
+            cell.y + 1u <= cell_max_index.y ? index_count[cases.e1] : 0u,
+            cell.y + 2u <= cell_max_index.y ? index_count[cases.e2] : 0u,
+            cell.y + 3u <= cell_max_index.y ? index_count[cases.e3] : 0u,
+            cell.y + 4u <= cell_max_index.y ? index_count[cases.e4] : 0u,
           };
 
           isum = counts.e0 + counts.e1 + counts.e2 + counts.e3 + counts.e4;
@@ -225,7 +219,6 @@ namespace {
     for (unsigned y = 0; y < 5; y++) {
 
       unsigned isum = 0;
-      unsigned vsum = 0;
       bool zmask = cell.z < cells.z;
       if (zmask) {
         float2 next = fetch(ptr, field_end_d, field_row_stride, threshold, thread);
@@ -681,7 +674,7 @@ namespace {
 
 
 ComputeStuff::MC::Context* ComputeStuff::MC::createContext(const Tables* tables,
-                                                           uint3 cells,
+                                                           uint3 grid_size,
                                                            bool indexed,
                                                            cudaStream_t stream)
 {
@@ -694,19 +687,34 @@ ComputeStuff::MC::Context* ComputeStuff::MC::createContext(const Tables* tables,
 
   //assert(tables);
   auto* ctx = new Context();
+  assert(0 < grid_size.x);
+  assert(0 < grid_size.y);
+  assert(0 < grid_size.z);
 
   ctx->tables = tables;
-  ctx->cells = cells;
+  ctx->grid_size = grid_size;
   ctx->indexed = indexed;
-  fprintf(stderr, "Cells [%u x %u x %u]\n", ctx->cells.x, ctx->cells.y, ctx->cells.z);
 
   // Each chunk handles a set of 32 x 5 x 5 cells.
-  ctx->chunks = make_uint3(((cells.x + (indexed ? 1 : 0) + 30) / 31),
-                           ((cells.y + (indexed ? 1 : 0) + 4) / 5),
-                           ((cells.z + (indexed ? 1 : 0) + 4) / 5));
+  ctx->chunks = make_uint3(((grid_size.x - (indexed ? 0 : 1) + 30) / 31),
+                           ((grid_size.y - (indexed ? 0 : 1) + 4) / 5),
+                           ((grid_size.z - (indexed ? 0 : 1) + 4) / 5));
+  assert(0 < ctx->chunks.x);
+  assert(0 < ctx->chunks.y);
+  assert(0 < ctx->chunks.z);
+  assert(31 * (ctx->chunks.x - 1) < ctx->grid_size.x);  // cell (0,0,0) has  at least corner (0,0,0) inside field
+  assert(5 * (ctx->chunks.y - 1) < ctx->grid_size.y);
+  assert(5 * (ctx->chunks.z - 1) < ctx->grid_size.z);
+
+  assert(ctx->grid_size.x <= 31 * ctx->chunks.x);  // make sure grid is large enough
+  assert(ctx->grid_size.y <= 5 * ctx->chunks.y);
+  assert(ctx->grid_size.z <= 5 * ctx->chunks.z);
+
   ctx->chunk_total = ctx->chunks.x * ctx->chunks.y * ctx->chunks.z;
-  fprintf(stderr, "Chunks [%u x %u x %u] = %u\n",
-          ctx->chunks.x, ctx->chunks.y, ctx->chunks.z, ctx->chunk_total);
+  fprintf(stderr, "Grid size [%u x %u x %u]\n", ctx->grid_size.x, ctx->grid_size.y, ctx->grid_size.z);
+  fprintf(stderr, "Chunks [%u x %u x %u] (= %u) cover=[%u x %u x %u]\n",
+          ctx->chunks.x, ctx->chunks.y, ctx->chunks.z, ctx->chunk_total,
+          31 * ctx->chunks.x, 5 * ctx->chunks.y, 5 * ctx->chunks.z);
 
 
   // Pyramid base level, as number of uvec4's:
@@ -824,6 +832,7 @@ void ComputeStuff::MC::buildPN(Context* ctx,
   if (buildPyramid) {
     // Indexed pyramid buildup
     if (ctx->indexed) {
+
       ::reduceBaseIndexed<float> << <ctx->chunk_total, 32, 0, stream >> > (ctx->index_cases_d,                   // block writes 5*5*32=800 uint8's
                                                                            ctx->vertex_pyramid + ctx->level_offsets[0], // block writes 5*32 uvec4's
                                                                            ctx->vertex_sidebands[0],                    // block writes 5*32 uint32's
@@ -836,7 +845,9 @@ void ComputeStuff::MC::buildPN(Context* ctx,
                                                                            size_t(field_size.x) * field_size.y,
                                                                            threshold,
                                                                            ctx->chunks,
-                                                                           ctx->cells);
+                                                                           make_uint3(ctx->grid_size.x - 1,
+                                                                                      ctx->grid_size.y - 1,
+                                                                                      ctx->grid_size.z - 1));
       bool sb = true;
       for (unsigned i = 1; i < ctx->levels - 3; i++) {
         const auto blocks = (ctx->level_sizes[i] + 31) / 32;
@@ -874,7 +885,9 @@ void ComputeStuff::MC::buildPN(Context* ctx,
                                                                     size_t(field_size.x) * field_size.y,
                                                                     threshold,
                                                                     ctx->chunks,
-                                                                    ctx->cells);
+                                                                    make_uint3(ctx->grid_size.x - 1,
+                                                                               ctx->grid_size.y - 1,
+                                                                               ctx->grid_size.z - 1));
 
       bool sb = true;
       for (unsigned i = 1; i < ctx->levels - 3; i++) {
@@ -908,9 +921,9 @@ void ComputeStuff::MC::buildPN(Context* ctx,
                                             static_cast<uint32_t>(output_buffer_size / (6 * sizeof(float))),
                                             0,
                                             make_uint2(ctx->chunks.x, ctx->chunks.y),
-                                            make_float3(1.f / ctx->cells.x,
-                                                        1.f / ctx->cells.y,
-                                                        1.f / ctx->cells.z),
+                                            make_float3(1.f / field_size.x,
+                                                        1.f / field_size.y,
+                                                        1.f / field_size.z),
                                             threshold,
                                             alwaysExtract,
                                             ctx->indexed);
