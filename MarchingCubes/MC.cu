@@ -31,6 +31,22 @@ namespace {
     return make_float2(r0, r1);
   }
 
+  template<typename T>
+  __device__ float2 fetch2(const T* ptr, const size_t stride, const uint32_t y, const uint32_t max_y, const float t)
+  {
+    float t0 = (ptr[0] < t) ? 1.f : 0.f; ptr += (y + 1 <= max_y) ? stride : 0;
+    float t1 = (ptr[0] < t) ? 1.f : 0.f; ptr += (y + 2 <= max_y) ? stride : 0;
+    float t2 = (ptr[0] < t) ? 1.f : 0.f; ptr += (y + 3 <= max_y) ? stride : 0;
+    float t3 = (ptr[0] < t) ? 1.f : 0.f; ptr += (y + 4 <= max_y) ? stride : 0;
+    float t4 = (ptr[0] < t) ? 1.f : 0.f; ptr += (y + 5 <= max_y) ? stride : 0;
+    float t5 = (ptr[0] < t) ? 1.f : 0.f;
+
+    float r0 = __fmaf_rn(float(1 << 16), t2, __fmaf_rn(float(1 << 8), t1, t0));
+    float r1 = __fmaf_rn(float(1 << 16), t5, __fmaf_rn(float(1 << 8), t4, t3));
+    return make_float2(r0, r1);
+  }
+
+
   __device__ __forceinline__ uint32_t piercingAxesFromCase(uint32_t c)
   {
     return ((((c & 1) << 1) |
@@ -75,7 +91,7 @@ namespace {
                                                           const size_t                    field_slice_stride,
                                                           const float                     threshold,
                                                           const uint3                     chunks,
-                                                          const uint3                     cell_max_index)
+                                                          const uint3                     grid_max_index)
   {
     const uint32_t warp = threadIdx.x / 32;
     const uint32_t thread = threadIdx.x % 32;
@@ -94,90 +110,85 @@ namespace {
     const FieldType* ptr = field_d
                          + cell.z * field_slice_stride
                          + cell.y * field_row_stride
-                         + min(cell_max_index.x, cell.x);
-    float2 prev = fetch(ptr, field_end_d, field_row_stride, threshold, thread);
+                         + min(grid_max_index.x, cell.x);
+    float2 prev = fetch2(ptr, field_row_stride, cell.y, grid_max_index.y, threshold);
     ptr += field_slice_stride;
 
-    for (unsigned y = 0; y < 5; y++) {
+    for (unsigned z = 0; z < 5; z++) {
 
       unsigned isum = 0;
       unsigned vsum = 0;
-      bool zmask = cell.z <= cell_max_index.z;
+      bool zmask = cell.z <= grid_max_index.z;
       if (zmask) {
-        float2 next = fetch(ptr, field_end_d, field_row_stride, threshold, thread);
-        ptr += field_slice_stride;
+        float2 next = fetch2(ptr, field_row_stride, cell.y, grid_max_index.y, threshold);
+        ptr += cell.z + 1 < grid_max_index.z ? field_slice_stride : 0;
 
-      float2 t0 = make_float2(__fmaf_rn(float(1 << 4), next.x, prev.x),
-                              __fmaf_rn(float(1 << 4), next.y, prev.y));
+        float2 t0 = make_float2(__fmaf_rn(float(1 << 4), next.x, prev.x),
+                                __fmaf_rn(float(1 << 4), next.y, prev.y));
 
         prev = next;
 
         float2 tt = make_float2(__shfl_down_sync(0xffffffff, t0.x, 1),
                                 __shfl_down_sync(0xffffffff, t0.y, 1));
 
-        if (cell.x <= cell_max_index.x && thread < 31) {
+        if (cell.x <= grid_max_index.x && thread < 31) {
           uint32_t g0 = static_cast<uint32_t>(__fmaf_rn(2.f, tt.x, t0.x));
           uint32_t g1 = static_cast<uint32_t>(__fmaf_rn(2.f, tt.y, t0.y));
           uint32_t s0 = __byte_perm(g0, g1, (4 << 12) | (2 << 8) | (1 << 4) | (0 << 0));
           g0 = g0 | (s0 >> 6);
           g1 = g1 | (g1 >> 6);
 
-          uint5 cases = {
-            __byte_perm(g0, 0, (4 << 12) | (4 << 8) | (4 << 4) | (0 << 0)),
-            __byte_perm(g0, 0, (4 << 12) | (4 << 8) | (4 << 4) | (1 << 0)),
-            __byte_perm(g0, 0, (4 << 12) | (4 << 8) | (4 << 4) | (2 << 0)),
-            __byte_perm(g1, 0, (4 << 12) | (4 << 8) | (4 << 4) | (0 << 0)),
-            __byte_perm(g1, 0, (4 << 12) | (4 << 8) | (4 << 4) | (1 << 0))
-          };
+          uint32_t case_y0 = __byte_perm(g0, 0, (4 << 12) | (4 << 8) | (4 << 4) | (0 << 0));
+          uint32_t case_y1 = __byte_perm(g0, 0, (4 << 12) | (4 << 8) | (4 << 4) | (1 << 0));
+          uint32_t case_y2 = __byte_perm(g0, 0, (4 << 12) | (4 << 8) | (4 << 4) | (2 << 0));
+          uint32_t case_y3 = __byte_perm(g1, 0, (4 << 12) | (4 << 8) | (4 << 4) | (0 << 0));
+          uint32_t case_y4 = __byte_perm(g1, 0, (4 << 12) | (4 << 8) | (4 << 4) | (1 << 0));
 
-          uint32_t vc0 = axisCountFromCase(cases.e0);
-          uint32_t vc1 = axisCountFromCase(cases.e1);
-          uint32_t vc2 = axisCountFromCase(cases.e2);
-          uint32_t vc3 = axisCountFromCase(cases.e3);
-          uint32_t vc4 = axisCountFromCase(cases.e4);
+          uint32_t ic_y0 = (cell.z < grid_max_index.z) && (cell.y + 0u) <= grid_max_index.y ? index_count[case_y0] : 0u;
+          uint32_t ic_y1 = (cell.z < grid_max_index.z) && (cell.y + 1u) <= grid_max_index.y ? index_count[case_y1] : 0u;
+          uint32_t ic_y2 = (cell.z < grid_max_index.z) && (cell.y + 2u) <= grid_max_index.y ? index_count[case_y2] : 0u;
+          uint32_t ic_y3 = (cell.z < grid_max_index.z) && (cell.y + 3u) <= grid_max_index.y ? index_count[case_y3] : 0u;
+          uint32_t ic_y4 = (cell.z < grid_max_index.z) && (cell.y + 4u) <= grid_max_index.y ? index_count[case_y4] : 0u;
 
-          vsum = vc0 + vc1 + vc2 + vc3 + vc4;
-          if (vsum) {
-            out_index_level0_d[32 * 5 * blockIdx.x + 32 * y + thread] = make_uint4(vc0,
-                                                                                   vc0 + vc1,
-                                                                                   vc0 + vc1 + vc2,
-                                                                                   vc0 + vc1 + vc2 + vc3);
-          }
+          uint32_t vc_y0 = axisCountFromCase(case_y0);
+          uint32_t vc_y1 = axisCountFromCase(case_y1);
+          uint32_t vc_y2 = axisCountFromCase(case_y2);
+          uint32_t vc_y3 = axisCountFromCase(case_y3);
+          uint32_t vc_y4 = axisCountFromCase(case_y4);
 
-          uint5 counts{
-            cell.y + 0u <= cell_max_index.y ? index_count[cases.e0] : 0u,
-            cell.y + 1u <= cell_max_index.y ? index_count[cases.e1] : 0u,
-            cell.y + 2u <= cell_max_index.y ? index_count[cases.e2] : 0u,
-            cell.y + 3u <= cell_max_index.y ? index_count[cases.e3] : 0u,
-            cell.y + 4u <= cell_max_index.y ? index_count[cases.e4] : 0u,
-          };
+          vsum = vc_y0 + vc_y1 + vc_y2 + vc_y3 + vc_y4;
+          isum = ic_y0 + ic_y1 + ic_y2 + ic_y3 + ic_y4;
 
-          isum = counts.e0 + counts.e1 + counts.e2 + counts.e3 + counts.e4;
-          if (isum) {
-            // MC cases and HP base level is only visited if sum is nonzero
-            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 0] = cases.e0;
-            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 1] = cases.e1;
-            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 2] = cases.e2;
-            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 3] = cases.e3;
-            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 4] = cases.e4;
-            out_index_level0_d[32 * 5 * blockIdx.x + 32 * y + thread] = make_uint4(counts.e0,
-                                                                             counts.e0 + counts.e1,
-                                                                             counts.e0 + counts.e1 + counts.e2,
-                                                                             counts.e0 + counts.e1 + counts.e2 + counts.e3);
+          if (isum | vsum) {
+            // 8-bit arithmetic should suffice here
+            out_index_level0_d[32 * 5 * blockIdx.x + 32 * z + thread] = make_uint4(vc_y0,
+                                                                                   vc_y0 + vc_y1,
+                                                                                   vc_y0 + vc_y1 + vc_y2,
+                                                                                   vc_y0 + vc_y1 + vc_y2 + vc_y3);
+
+            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * z + thread) + 0] = case_y0;
+            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * z + thread) + 1] = case_y1;
+            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * z + thread) + 2] = case_y2;
+            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * z + thread) + 3] = case_y3;
+            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * z + thread) + 4] = case_y4;
+            out_index_level0_d[32 * 5 * blockIdx.x + 32 * z + thread] = make_uint4(ic_y0,
+                                                                                   ic_y0 + ic_y1,
+                                                                                   ic_y0 + ic_y1 + ic_y2,
+                                                                                   ic_y0 + ic_y1 + ic_y2 + ic_y3);
           }
           if (vsum) {
-            out_vertex_level0_d[32 * 5 * blockIdx.x + 32 * y + thread] = make_uint4(vc0,
-                                                                                    vc0 + vc1,
-                                                                                    vc0 + vc1 + vc2,
-                                                                                    vc0 + vc1 + vc2 + vc3);
+            out_vertex_level0_d[32 * 5 * blockIdx.x + 32 * z + thread] = make_uint4(vc_y0,
+                                                                                    vc_y0 + vc_y1,
+                                                                                    vc_y0 + vc_y1 + vc_y2,
+                                                                                    vc_y0 + vc_y1 + vc_y2 + vc_y3);
 
           }
           
         }
       }
       cell.z++;
-      out_vertex_sideband_d[32 * (5 * blockIdx.x + y) + threadIdx.x] = vsum;
-      out_index_sideband_d[32 * (5 * blockIdx.x + y) + threadIdx.x] = isum;
+      out_vertex_sideband_d[32 * (5 * blockIdx.x + z) + threadIdx.x] = vsum;
+      out_index_sideband_d[32 * (5 * blockIdx.x + z) + threadIdx.x] = isum;
     }
   }
 
