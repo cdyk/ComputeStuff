@@ -564,6 +564,42 @@ namespace {
     }
   }
 
+   __global__ void extractIndices(uint32_t* __restrict__       indices,
+                                  const uint4* __restrict__    vertex_pyramid,
+                                  const uint4* __restrict__    index_pyramid,
+                                  const uint8_t* __restrict__  index_cases,
+                                  const uint8_t* __restrict__  index_table,
+                                  const uint3                  full_grid_size,  // Full size, including padding.
+                                  const uint32_t               output_count,
+                                  const uint2                  chunks)
+  {
+     // FIXME: no point in up-traversal if cell doesn't change.
+     // FIXME: If extract 3 in a go, organize traversals to reduce up-traversal.
+
+    uint32_t ix = blockDim.x * blockIdx.x + threadIdx.x;
+    if (ix < output_count) {
+      const uint32_t* level_offset = (const uint32_t*)(index_pyramid);
+
+      hp5_result r = traverseDown(index_pyramid, level_offset, level_offset[15], ix);
+
+      uint8_t index_case = index_cases[r.offset];
+      uint3 p0 = decodeCellPosition(chunks, r.offset);
+
+      uint32_t axes = piercingAxesFromCase(index_case);
+      if (0 < r.remainder) axes = axes & (axes - 1);  // remove rightmost bit
+      if (1 < r.remainder) axes = axes & (axes - 1);  // remove rightmost bit
+      axes = axes & (-axes);                          // isolate rightmost bit
+
+      uint3 p1 = p0;
+      p1.x += (axes >> 1) & 1;
+      p1.y += (axes >> 2) & 1;
+      p1.z += (axes >> 4) & 1;
+
+      indices[ix] = ix;
+    }
+  }
+
+
   __global__ void extractVertexPN(float* __restrict__          output,
                                   const uint4* __restrict__    pyramid,
                                   const float* __restrict__    field,
@@ -648,6 +684,17 @@ namespace {
                                                                               chunks,
                                                                               scale,
                                                                               threshold);
+        }
+        uint32_t index_count_clamped = min(index_capacity, index_pyramid[8].x);
+        if(index_count_clamped) {
+          extractIndices<<<(index_count_clamped + 255) / 256, 256>>>(index_output,
+                                                                     vertex_pyramid,
+                                                                     index_pyramid,
+                                                                     index_cases,
+                                                                     index_table,
+                                                                     make_uint3(0, 0, 0),
+                                                                     index_count_clamped,
+                                                                     chunks);
         }
       }
       else {
@@ -828,8 +875,10 @@ void ComputeStuff::MC::getCounts(Context* ctx, uint32_t* vertices, uint32_t* ind
 
 
 void ComputeStuff::MC::buildPN(Context* ctx,
-                               void* output_buffer,
-                               size_t output_buffer_size,
+                               float* vertex_buffer,
+                               uint32_t* index_buffer,
+                               size_t vertex_buffer_bytesize,
+                               size_t index_buffer_bytesize,
                                size_t field_row_stride,
                                size_t field_slice_stride,
                                uint3 field_offset,
@@ -917,9 +966,9 @@ void ComputeStuff::MC::buildPN(Context* ctx,
     }
 
   }
-  if (output_buffer) {
-    ::runExtractionPN<<<1, 32, 0, stream>>>(reinterpret_cast<float*>(output_buffer),
-                                            nullptr,
+  if (vertex_buffer) {
+    ::runExtractionPN<<<1, 32, 0, stream>>>(vertex_buffer,
+                                            index_buffer,
                                             ctx->vertex_pyramid,
                                             ctx->index_pyramid,
                                             field_d,
@@ -929,8 +978,8 @@ void ComputeStuff::MC::buildPN(Context* ctx,
                                             field_slice_stride,
                                             field_offset,
                                             field_size,
-                                            static_cast<uint32_t>(output_buffer_size / (6 * sizeof(float))),
-                                            0,
+                                            static_cast<uint32_t>(vertex_buffer_bytesize / (6 * sizeof(float))),
+                                            static_cast<uint32_t>(index_buffer_bytesize / sizeof(uint32_t)),
                                             make_uint2(ctx->chunks.x, ctx->chunks.y),
                                             make_float3(1.f / field_size.x,
                                                         1.f / field_size.y,

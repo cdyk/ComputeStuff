@@ -54,8 +54,10 @@ namespace ComputeStuff {
     void freeContext(Context* ctx, cudaStream_t stream);
 
     void buildPN(Context* ctx,
-                 void* output_buffer,
-                 size_t output_buffer_size,
+                 float* vertex_buffer,
+                 uint32_t* index_buffer,
+                 size_t vertex_buffer_bytesize,
+                 size_t index_buffer_bytesize,
                  size_t field_row_stride,
                  size_t field_slice_stride,
                  uint3 field_offset,
