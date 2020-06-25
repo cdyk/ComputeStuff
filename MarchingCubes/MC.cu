@@ -112,7 +112,7 @@ namespace {
                          + cell.y * field_row_stride
                          + min(grid_max_index.x, cell.x);
     float2 prev = fetch2(ptr, field_row_stride, cell.y, grid_max_index.y, threshold);
-    ptr += field_slice_stride;
+    ptr += cell.z < grid_max_index.z ? field_slice_stride : 0;
 
     for (unsigned z = 0; z < 5; z++) {
 
@@ -151,10 +151,10 @@ namespace {
           uint32_t ic_y4 = (cell.x < grid_max_index.x) && (cell.z < grid_max_index.z) && ((cell.y + 4u) < grid_max_index.y) ? index_count[case_y4] : 0u;
 
           uint32_t vc_y0 = axisCountFromCase(case_y0);
-          uint32_t vc_y1 = axisCountFromCase(case_y1);
-          uint32_t vc_y2 = axisCountFromCase(case_y2);
-          uint32_t vc_y3 = axisCountFromCase(case_y3);
-          uint32_t vc_y4 = axisCountFromCase(case_y4);
+          uint32_t vc_y1 = cell.y + 1 <= grid_max_index.y ? axisCountFromCase(case_y1) : 0;
+          uint32_t vc_y2 = cell.y + 2 <= grid_max_index.y ? axisCountFromCase(case_y2) : 0;
+          uint32_t vc_y3 = cell.y + 3 <= grid_max_index.y ? axisCountFromCase(case_y3) : 0;
+          uint32_t vc_y4 = cell.y + 4 <= grid_max_index.y ? axisCountFromCase(case_y4) : 0;
 
           vsum = vc_y0 + vc_y1 + vc_y2 + vc_y3 + vc_y4;
           isum = ic_y0 + ic_y1 + ic_y2 + ic_y3 + ic_y4;

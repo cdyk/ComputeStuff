@@ -781,8 +781,7 @@ int main(int argc, char** argv)
       glUniform4f(2, 0.6f, 0.6f, 0.8f, 1.f);
       glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, cudaIndexBuf);
       glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-      //glDrawElements(GL_TRIANGLES, index_count, GL_UNSIGNED_INT, nullptr);
-      glDrawArrays(GL_POINTS, 0, vertex_count);
+      glDrawElements(GL_TRIANGLES, index_count, GL_UNSIGNED_INT, nullptr);
     }
     else {
       glUseProgram(solidPrg);
@@ -790,7 +789,7 @@ int main(int argc, char** argv)
       glUniformMatrix4fv(1, 1, GL_FALSE, frustum_shift_rz_ry_rx);
       glUniform4f(2, 0.6f, 0.6f, 0.8f, 1.f);
       glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-      glDrawArrays(GL_POINTS, 0, vertex_count);
+      glDrawArrays(GL_TRIANGLES, 0, vertex_count);
     }
     glDisable(GL_POLYGON_OFFSET_FILL);
 
