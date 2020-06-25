@@ -36,6 +36,12 @@ namespace {
     return make_float2(__fmaf_rn(float(1 << 4), z1.x, z0.x),
                        __fmaf_rn(float(1 << 4), z1.y, z0.y));
   }
+  __device__ __forceinline__ uint32_t piercingAxesFromCase(uint32_t c)
+  {
+    return ((((c & 1) << 1) |
+             ((c & 1) << 2) |
+             ((c & 1) << 4) ) ^ c ) & 0b10110;
+  }
 
   __device__ __forceinline__ uint32_t axisCountFromCase(const uint32_t c)
   {
@@ -48,6 +54,9 @@ namespace {
         "  popc.b32 %0, t3;\n"          // Count number of 1's (should be 0..3).
         "}"
         : "=r"(n) :"r"(c));
+
+    unsigned q = piercingAxesFromCase(c);
+    assert(((q >> 1) & 1) + ((q >> 2) & 1) + ((q >> 4) & 1) == n);
 
     unsigned m =
       ((c & 1) ^ ((c >> 1) & 1)) +
@@ -161,6 +170,13 @@ namespace {
                                                                              counts.e0 + counts.e1,
                                                                              counts.e0 + counts.e1 + counts.e2,
                                                                              counts.e0 + counts.e1 + counts.e2 + counts.e3);
+          }
+          if (indexed && vsum) {
+            out_vertex_level0_d[32 * 5 * blockIdx.x + 32 * y + thread] = make_uint4(vc0,
+                                                                                    vc0 + vc1,
+                                                                                    vc0 + vc1 + vc2,
+                                                                                    vc0 + vc1 + vc2 + vc3);
+
           }
           
         }
@@ -389,7 +405,7 @@ namespace {
                             field_slice_stride,
                             i1);
 
-    float t = (threshold - f0.w) / (f1.w - f0.w);
+    float t = 0.5;// (threshold - f0.w) / (f1.w - f0.w);
 
     float nx = scale.x * ((1.f - t) * f0.x + t * f1.x - threshold);
     float ny = scale.y * ((1.f - t) * f0.y + t * f1.y - threshold);
@@ -427,16 +443,17 @@ namespace {
       hp5_result r = traverseDown(pyramid, level_offset, level_offset[15], ix);
 
       uint8_t index_case = index_cases[r.offset];
-      uint8_t index_code = index_table[16u * index_case + r.remainder];
       uint3 p0 = decodeCellPosition(chunks, r.offset);
 
-      p0.x += (index_code >> 3) & 1;
-      p0.y += (index_code >> 4) & 1;
-      p0.z += (index_code >> 5) & 1;
+      uint32_t axes = piercingAxesFromCase(index_case);
+      if (0 < r.remainder) axes = axes & (axes - 1);  // remove rightmost bit
+      if (1 < r.remainder) axes = axes & (axes - 1);  // remove rightmost bit
+      axes = axes & (-axes);                          // isolate rightmost bit
+
       uint3 p1 = p0;
-      p1.x += (index_code >> 0) & 1;
-      p1.y += (index_code >> 1) & 1;
-      p1.z += (index_code >> 2) & 1;
+      p1.x += (axes >> 1) & 1;
+      p1.y += (axes >> 2) & 1;
+      p1.z += (axes >> 4) & 1;
 
       emitVertexNormal(output + 6 * ix,
                        field,
