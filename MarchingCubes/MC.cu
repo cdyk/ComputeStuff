@@ -616,7 +616,7 @@ namespace {
                                 ((index_code & (1 << 5)) ? (chunk_pos.z == 4 ? (800 * chunks.x * chunks.y - 4 * 5 * 32) : (5 * 32)): 0));
 
       uint32_t vertex_cell_case = index_cases[vertex_offset];
-      uint32_t axes = axisCountFromCase(vertex_cell_case);
+      uint32_t axes = piercingAxesFromCase(vertex_cell_case);
 
       int32_t vertex_index = 0;
       for (unsigned l = 0; l < level_count; l++) {
