@@ -32,6 +32,7 @@ namespace {
   uint32_t ny = 255;
   uint32_t nz = 255;
   bool wireframe = false;
+  bool indexed = true;
   float threshold = 0.f;
 
   std::vector<char> scalarField_host;
@@ -571,6 +572,7 @@ int main(int argc, char** argv)
     glfwGetWindowSize(win, &width, &height);
 
     uint32_t vertex_count = 0;
+    uint32_t Nv = 0;
     uint32_t index_count = 0;
     {
       void* cudaBuf_d = nullptr;
@@ -594,7 +596,9 @@ int main(int argc, char** argv)
       CHECKED_CUDA(cudaEventRecord(events[2 * eventCounter + 1], stream));
       CHECKED_CUDA(cudaGraphicsUnmapResources(1, &bufferResource, stream));
       ComputeStuff::MC::getCounts(ctx, &vertex_count, &index_count, stream);
-
+      Nv = vertex_count;
+      vertex_count = index_count;
+      
       eventCounter = (eventCounter + 1) & 3;
       float ms = 0;
       CHECKED_CUDA(cudaEventElapsedTime(&ms, events[2 * eventCounter + 0], events[2 * eventCounter + 1]));
@@ -701,10 +705,12 @@ int main(int argc, char** argv)
       std::chrono::duration<double> elapsed = now - timer;
       auto s = elapsed.count();
       if (10 < frames && 3.0 < s) {
-        fprintf(stderr, "%.2f FPS (%.2f MVPS) cuda avg: %.2fms (%.2f MVPS) %ux%ux%u\n",
+        fprintf(stderr, "%.2f FPS (%.2f MVPS) cuda avg: %.2fms (%.2f MVPS) %ux%ux%u Nv=%u Ni=%u\n",
                 frames / s, (float(frames)* nx *ny * nz) / (1000000.f * s),
                 cuda_ms/frames, (float(frames)* nx* ny* nz) / (1000.f * cuda_ms),
-                nx, ny, nz);
+                nx, ny, nz,
+                Nv /*vertex_count*/,
+                index_count);
         timer = now;
         frames = 0;
         cuda_ms = 0.f;

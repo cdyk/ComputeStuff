@@ -37,11 +37,26 @@ namespace {
                        __fmaf_rn(float(1 << 4), z1.y, z0.y));
   }
 
+  __device__ __forceinline__ uint32_t axisCountFromCase(const uint32_t c)
+  {
+    uint32_t n;
+    asm("{\n"
+        "  .reg .u32 t1, t2, t3;\n"
+        "  bfe.s32 t1, %1, 0, 1;\n"     // Sign-extend bit 0 (0,0,0) over whole word
+        "  xor.b32 t2, %1, t1;\n"       // XOR with (0,0,0) to see which corners change sign wrt (0,0,0).
+        "  and.b32 t3, t2, 0b10110;\n"  // Mask out (1,0,0), (0,1,0) and (0,0,1).
+        "  popc.b32 %0, t3;\n"          // Count number of 1's (should be 0..3).
+        "}"
+        : "=r"(n) :"r"(c));
+    return n;
+  }
 
-  template<class FieldType>
+  template<class FieldType, bool indexed>
   __global__ __launch_bounds__(32) void reduce_base(uint8_t* __restrict__           index_cases_d,
-                                                    uint4* __restrict__           out_level0_d,
-                                                    uint32_t* __restrict__          out_sideband_d,
+                                                    uint4* __restrict__             out_vertex_level0_d,
+                                                    uint32_t* __restrict__          out_vertex_sideband_d,
+                                                    uint4* __restrict__             out_index_level0_d,
+                                                    uint32_t* __restrict__          out_index_sideband_d,
                                                     const uint8_t* __restrict__     index_count,
                                                     const FieldType* __restrict__   field_d,
                                                     const FieldType* __restrict__   field_end_d,
@@ -76,21 +91,24 @@ namespace {
     bool xmask = cell.x < cells.x;
     for (unsigned y = 0; y < 5; y++) {
 
-      unsigned sum = 0;
+      unsigned isum = 0;
+      unsigned vsum = 0;
       bool zmask = cell.z < cells.z;
       if (zmask) {
         float2 next = fetch(ptr, field_end_d, field_row_stride, threshold, thread);
         ptr += field_slice_stride;
 
-        float2 cases_ = mergeZ(prev, next);
+      float2 t0 = make_float2(__fmaf_rn(float(1 << 4), next.x, prev.x),
+                              __fmaf_rn(float(1 << 4), next.y, prev.y));
+
         prev = next;
 
-        float2 tt = make_float2(__shfl_down_sync(0xffffffff, cases_.x, 1),
-                                __shfl_down_sync(0xffffffff, cases_.y, 1));
+        float2 tt = make_float2(__shfl_down_sync(0xffffffff, t0.x, 1),
+                                __shfl_down_sync(0xffffffff, t0.y, 1));
 
         if (xmask && thread < 31) {
-          uint32_t g0 = static_cast<uint32_t>(__fmaf_rn(2.f, tt.x, cases_.x));
-          uint32_t g1 = static_cast<uint32_t>(__fmaf_rn(2.f, tt.y, cases_.y));
+          uint32_t g0 = static_cast<uint32_t>(__fmaf_rn(2.f, tt.x, t0.x));
+          uint32_t g1 = static_cast<uint32_t>(__fmaf_rn(2.f, tt.y, t0.y));
           uint32_t s0 = __byte_perm(g0, g1, (4 << 12) | (2 << 8) | (1 << 4) | (0 << 0));
           g0 = g0 | (s0 >> 6);
           g1 = g1 | (g1 >> 6);
@@ -103,6 +121,20 @@ namespace {
             __byte_perm(g1, 0, (4 << 12) | (4 << 8) | (4 << 4) | (1 << 0))
           };
 
+          uint32_t vc0 = axisCountFromCase(cases.e0);
+          uint32_t vc1 = axisCountFromCase(cases.e1);
+          uint32_t vc2 = axisCountFromCase(cases.e2);
+          uint32_t vc3 = axisCountFromCase(cases.e3);
+          uint32_t vc4 = axisCountFromCase(cases.e4);
+
+          vsum = vc0 + vc1 + vc2 + vc3 + vc4;
+          if (vsum) {
+            out_index_level0_d[32 * 5 * blockIdx.x + 32 * y + thread] = make_uint4(vc0,
+                                                                                   vc0 + vc1,
+                                                                                   vc0 + vc1 + vc2,
+                                                                                   vc0 + vc1 + vc2 + vc3);
+          }
+
           uint5 counts{
             cell.y + 0u < cells.y ? index_count[cases.e0] : 0u,
             cell.y + 1u < cells.y ? index_count[cases.e1] : 0u,
@@ -111,26 +143,29 @@ namespace {
             cell.y + 4u < cells.y ? index_count[cases.e4] : 0u,
           };
 
-          sum = counts.e0 + counts.e1 + counts.e2 + counts.e3 + counts.e4;
-
-          if (sum) {
+          isum = counts.e0 + counts.e1 + counts.e2 + counts.e3 + counts.e4;
+          if (isum) {
             // MC cases and HP base level is only visited if sum is nonzero
             index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 0] = cases.e0;
             index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 1] = cases.e1;
             index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 2] = cases.e2;
             index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 3] = cases.e3;
             index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 4] = cases.e4;
-            out_level0_d[32 * 5 * blockIdx.x + 32 * y + thread] = make_uint4(counts.e0,
+            out_index_level0_d[32 * 5 * blockIdx.x + 32 * y + thread] = make_uint4(counts.e0,
                                                                              counts.e0 + counts.e1,
                                                                              counts.e0 + counts.e1 + counts.e2,
                                                                              counts.e0 + counts.e1 + counts.e2 + counts.e3);
           }
+          
         }
       }
       cell.z++;
-      out_sideband_d[32 * (5 * blockIdx.x + y) + threadIdx.x] = sum;// t.x + t.y + t.z + t.w + sideband[5 * thread + 4];
+      out_vertex_sideband_d[32 * (5 * blockIdx.x + y) + threadIdx.x] = vsum;// t.x + t.y + t.z + t.w + sideband[5 * thread + 4];
+      out_index_sideband_d[32 * (5 * blockIdx.x + y) + threadIdx.x] = isum;// t.x + t.y + t.z + t.w + sideband[5 * thread + 4];
     }
   }
+
+
 
 
   // Reads 160 values, outputs HP level of 128 values, and 32 sideband values.
@@ -580,7 +615,8 @@ void ComputeStuff::MC::getCounts(Context* ctx, uint32_t* vertices, uint32_t* ind
   // sync'ing on the stream further down is slightly faster than adding an event
   // here and blocking on it in here. 
   CHECKED_CUDA(cudaStreamSynchronize(stream));
-  *vertices = *ctx->sum_h;
+  *vertices = ctx->indexed ? ctx->sum_h[1] : ctx->sum_h[0];
+  *indices = ctx->indexed ? ctx->sum_h[0] : 0;
 }
 
 
@@ -598,32 +634,64 @@ void ComputeStuff::MC::buildPN(Context* ctx,
                                bool alwaysExtract = true)
 {
   if (buildPyramid) {
-    ::reduce_base<float><<<ctx->chunk_total, 32, 0, stream>>>(ctx->index_cases_d,                   // block writes 5*5*32=800 uint8's
-                                                              ctx->index_pyramid + ctx->level_offsets[0], // block writes 5*32 uvec4's
-                                                              ctx->index_sidebands[0],                    // block writes 5*32 uint32's
-                                                              ctx->tables->index_count,
-                                                              field_d,
-                                                              field_d + size_t(field_size.x) * field_size.y * field_size.z,
-                                                              size_t(field_size.x),
-                                                              size_t(field_size.x) * field_size.y,
-                                                              threshold,
-                                                              ctx->chunks,
-                                                              ctx->cells);
+    if (ctx->indexed) {
+      ::reduce_base<float, true><<<ctx->chunk_total, 32, 0, stream>>>(ctx->index_cases_d,                   // block writes 5*5*32=800 uint8's
+                                                                      ctx->vertex_pyramid + ctx->level_offsets[0], // block writes 5*32 uvec4's
+                                                                      ctx->vertex_sidebands[0],                    // block writes 5*32 uint32's
+                                                                      ctx->index_pyramid + ctx->level_offsets[0], // block writes 5*32 uvec4's
+                                                                      ctx->index_sidebands[0],                    // block writes 5*32 uint32's
+                                                                      ctx->tables->index_count,
+                                                                      field_d,
+                                                                      field_d + size_t(field_size.x) * field_size.y * field_size.z,
+                                                                      size_t(field_size.x),
+                                                                      size_t(field_size.x) * field_size.y,
+                                                                      threshold,
+                                                                      ctx->chunks,
+                                                                      ctx->cells);
+    }
+    else {
+      ::reduce_base<float, false><<<ctx->chunk_total, 32, 0, stream>>>(ctx->index_cases_d,                   // block writes 5*5*32=800 uint8's
+                                                                       nullptr,
+                                                                       nullptr,
+                                                                       ctx->index_pyramid + ctx->level_offsets[0], // block writes 5*32 uvec4's
+                                                                       ctx->index_sidebands[0],                    // block writes 5*32 uint32's
+                                                                       ctx->tables->index_count,
+                                                                       field_d,
+                                                                       field_d + size_t(field_size.x) * field_size.y * field_size.z,
+                                                                       size_t(field_size.x),
+                                                                       size_t(field_size.x) * field_size.y,
+                                                                       threshold,
+                                                                       ctx->chunks,
+                                                                       ctx->cells);
+    }
 
     bool sb = true;
     for (unsigned i = 1; i < ctx->levels - 3; i++) {
       const auto blocks = (ctx->level_sizes[i] + 31) / 32;
-      reduce1<<<blocks, 5 * 32, 0, stream>>>(ctx->index_pyramid + ctx->level_offsets[i], // Each block will write 32 uvec4's into this
-                                             ctx->index_sidebands[sb ? 1 : 0],           // Each block will write 32 uint32's into this
-                                             ctx->level_sizes[i],                  // Number of uvec4's in level i
-                                             ctx->index_sidebands[sb ? 0 : 1],           // Input, each block will read 5*32=160 values from here
-                                             ctx->level_sizes[i - 1]);               // Number of sideband elements from level i-1
+      reduce1<<<blocks, 5 * 32, 0, stream>>>(ctx->index_pyramid + ctx->level_offsets[i],    // Each block will write 32 uvec4's into this
+                                             ctx->index_sidebands[sb ? 1 : 0],              // Each block will write 32 uint32's into this
+                                             ctx->level_sizes[i],                           // Number of uvec4's in level i
+                                             ctx->index_sidebands[sb ? 0 : 1],              // Input, each block will read 5*32=160 values from here
+                                             ctx->level_sizes[i - 1]);                      // Number of sideband elements from level i-1
+      if (false &&ctx->indexed) {
+        reduce1<<<blocks, 5 * 32, 0, stream>>>(ctx->vertex_pyramid + ctx->level_offsets[i], // Each block will write 32 uvec4's into this
+                                               ctx->vertex_sidebands[sb ? 1 : 0],           // Each block will write 32 uint32's into this
+                                               ctx->level_sizes[i],                         // Number of uvec4's in level i
+                                               ctx->vertex_sidebands[sb ? 0 : 1],           // Input, each block will read 5*32=160 values from here
+                                               ctx->level_sizes[i - 1]);                    // Number of sideband elements from level i-1
+      }
       sb = !sb;
     }
     reduceApex<<<1, 4 * 32, 0, stream>>>(ctx->index_pyramid + 8,
                                          ctx->sum_d,
                                          ctx->index_sidebands[sb ? 0 : 1],
                                          ctx->level_sizes[ctx->levels - 4]);
+    if (ctx->indexed) {
+      reduceApex<<<1, 4 * 32, 0, stream>>>(ctx->vertex_pyramid + 8,
+                                           ctx->sum_d + 1,
+                                           ctx->vertex_sidebands[sb ? 0 : 1],
+                                           ctx->level_sizes[ctx->levels - 4]);
+    }
   }
 
   if (output_buffer) {
