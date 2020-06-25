@@ -79,43 +79,48 @@ namespace {
 
 
   const std::string simpleVS_src = R"(#version 430
-
 in layout(location=0) vec3 inPosition;
 in layout(location=1) vec3 inNormal;
-
 out vec3 normal;
-
 uniform layout(location=0) mat4 MV;
 uniform layout(location=1) mat4 MVP;
-
 void main() {
   normal = mat3(MV)*inNormal;
   gl_Position = MVP * vec4(inPosition, 1);
-  //gl_Position = vec4(inPosition, 1);
 }
 )";
 
   const std::string simpleFS_src = R"(#version 430
-
 in vec3 normal;
-
 out layout(location=0) vec4 outColor;
 uniform layout(location=2) vec4 color;
-uniform layout(location=3) uint shade;
-
 void main() {
- 
   float d = max(0.0, dot(vec3(0,0,1), gl_FrontFacing ? -normal : normal));
-
   if(gl_FrontFacing)
     outColor = d * color.rgba;
   else
     outColor = color.bgra;
-  //outColor = vec4(abs(normal), 1);
-  //outColor = vec4(1,0,0,1);
+}
+)";
+
+  const std::string solidVS_src = R"(#version 430
+in layout(location=0) vec3 inPosition;
+uniform layout(location=0) mat4 MV;
+uniform layout(location=1) mat4 MVP;
+void main() {
+  gl_Position = MVP * vec4(inPosition, 1);
+}
+)";
+
+  const std::string solidFS_src = R"(#version 430
+out layout(location=0) vec4 outColor;
+uniform layout(location=2) vec4 color;
+void main() {
+  outColor = color.rgba;
 }
 
 )";
+
 
   [[noreturn]]
   void handleOpenGLError(GLenum error, const std::string file, int line)
@@ -285,6 +290,24 @@ void main() {
     float v = 1.f - 16.f * x * y * z - 4.f * (x * x + y * y + z * z);
     return v;
   }
+
+  GLfloat wireBoxVertexData[] =
+  {
+    0.f, 0.f, 0.f,  1.f, 0.f, 0.f,
+    0.f, 0.f, 1.f,  1.f, 0.f, 1.f,
+    0.f, 1.f, 0.f,  1.f, 1.f, 0.f,
+    0.f, 1.f, 1.f,  1.f, 1.f, 1.f,
+
+    0.f, 0.f, 0.f,  0.f, 1.f, 0.f,
+    0.f, 0.f, 1.f,  0.f, 1.f, 1.f,
+    1.f, 0.f, 0.f,  1.f, 1.f, 0.f,
+    1.f, 0.f, 1.f,  1.f, 1.f, 1.f,
+
+    0.f, 0.f, 0.f,  0.f, 0.f, 1.f,
+    0.f, 1.f, 0.f,  0.f, 1.f, 1.f,
+    1.f, 0.f, 0.f,  1.f, 0.f, 1.f,
+    1.f, 1.f, 0.f,  1.f, 1.f, 1.f
+  };
 
   void buildCayleyField()
   {
@@ -544,6 +567,27 @@ int main(int argc, char** argv)
   GLuint simplePrg = createProgram(simpleVS, simpleFS);
   assert(simplePrg != 0);
 
+  GLuint solidVS = createShader(solidVS_src, GL_VERTEX_SHADER);
+  assert(solidVS != 0);
+
+  GLuint solidFS = createShader(solidFS_src, GL_FRAGMENT_SHADER);
+  assert(solidFS != 0);
+
+  GLuint solidPrg = createProgram(solidVS, solidFS);
+  assert(solidPrg != 0);
+
+
+  //GLuint vdatabuf = createBuffer(GL_ARRAY_BUFFER, GL_STATIC_DRAW, sizeof(vertexData), (const void*)vertexData);
+  GLuint wireBoxVertexBuffer = createBuffer(GL_ARRAY_BUFFER, GL_STATIC_DRAW, sizeof(wireBoxVertexData),  wireBoxVertexData);
+  uint32_t wireBoxVertexCount = sizeof(wireBoxVertexData) / (3 * sizeof(float));
+
+  GLuint wireBoxVbo = 0;
+  glGenVertexArrays(1, &wireBoxVbo);
+  glBindVertexArray(wireBoxVbo);
+  glBindBuffer(GL_ARRAY_BUFFER, wireBoxVertexBuffer);
+  glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(float) * 3, nullptr);
+  glEnableVertexAttribArray(0);
+
   unsigned eventCounter = 0;
   cudaEvent_t events[2 * 4];
   for (size_t i = 0; i < 2 * 4; i++) {
@@ -685,23 +729,29 @@ int main(int argc, char** argv)
     glBindVertexArray(cudaVbo);
     glUniformMatrix4fv(0, 1, GL_FALSE, rz_ry_rx);
     glUniformMatrix4fv(1, 1, GL_FALSE, frustum_shift_rz_ry_rx);
-
-
+    glUniform4f(2, 0.6f, 0.6f, 0.8f, 1.f);
     glPolygonOffset(0.f, 1.f);
     glEnable(GL_POLYGON_OFFSET_FILL);
-
-    glUniform4f(2, 0.6f, 0.6f, 0.8f, 1.f);
-    glUniform1i(3, 1);
     glDrawArrays(GL_POINTS, 0, vertex_count);
     glDisable(GL_POLYGON_OFFSET_FILL);
 
     if (wireframe) {
+      glUseProgram(solidPrg);
       glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-      glUniform1i(3, 0);
+      glUniformMatrix4fv(0, 1, GL_FALSE, rz_ry_rx);
+      glUniformMatrix4fv(1, 1, GL_FALSE, frustum_shift_rz_ry_rx);
       glUniform4f(2, 1.f, 1.f, 1.f, 1.f);
       glDrawArrays(GL_TRIANGLES, 0, vertex_count);
       glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
     }
+
+    glBindVertexArray(wireBoxVbo);
+    glUseProgram(solidPrg);
+    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+    glUniformMatrix4fv(0, 1, GL_FALSE, rz_ry_rx);
+    glUniformMatrix4fv(1, 1, GL_FALSE, frustum_shift_rz_ry_rx);
+    glUniform4f(2, 1.f, 1.f, 1.f, 1.f);
+    glDrawArrays(GL_LINES, 0, wireBoxVertexCount);
 
     glfwSwapBuffers(win);
     glfwPollEvents();
