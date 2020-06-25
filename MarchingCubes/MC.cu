@@ -628,14 +628,16 @@ namespace {
         else if (rem == 3) vertex_index += item.z;
         else if (rem == 4) vertex_index += item.w;
       }
-      //assert(vertex_index + r.remainder == ix);
 
-      if (index_code & (1<<1)) {       // Want Y-axis
-        axes &= 0b0010;           // Add 1 for X-axis if present
+      if (index_code & 0b001) {
+        axes = 0b0000;
       }
-      else if (index_code & (1<<2)) {  // Want Z-axis
-        axes &= 0b0110;           // Add 1 for X and Y-axes if present
-      }                           // Else X-axis and we need no adjustment
+      if (index_code & 0b010) {       // Want Y-axis
+        axes &= 0b0010;                     // Add 1 for X-axis if present
+      }
+      if (index_code & 0b100) {       // Want Z-axis
+        axes &= 0b0110;                     // Add 1 for X and Y-axes if present
+      }                                     // Else X-axis and we need no adjustment
       uint32_t n;
       asm("popc.b32 %0, %1;": "=r"(n) : "r"(axes));
       vertex_index += n;
