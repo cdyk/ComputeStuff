@@ -67,20 +67,20 @@ namespace {
     return n;
   }
 
-  template<class FieldType, bool indexed>
-  __global__ __launch_bounds__(32) void reduce_base(uint8_t* __restrict__           index_cases_d,
-                                                    uint4* __restrict__             out_vertex_level0_d,
-                                                    uint32_t* __restrict__          out_vertex_sideband_d,
-                                                    uint4* __restrict__             out_index_level0_d,
-                                                    uint32_t* __restrict__          out_index_sideband_d,
-                                                    const uint8_t* __restrict__     index_count,
-                                                    const FieldType* __restrict__   field_d,
-                                                    const FieldType* __restrict__   field_end_d,
-                                                    const size_t                    field_row_stride,
-                                                    const size_t                    field_slice_stride,
-                                                    const float                     threshold,
-                                                    const uint3                     chunks,
-                                                    const uint3                     cells)
+  template<class FieldType>
+  __global__ __launch_bounds__(32) void reduceBaseIndexed(uint8_t* __restrict__           index_cases_d,
+                                                          uint4* __restrict__             out_vertex_level0_d,
+                                                          uint32_t* __restrict__          out_vertex_sideband_d,
+                                                          uint4* __restrict__             out_index_level0_d,
+                                                          uint32_t* __restrict__          out_index_sideband_d,
+                                                          const uint8_t* __restrict__     index_count,
+                                                          const FieldType* __restrict__   field_d,
+                                                          const FieldType* __restrict__   field_end_d,
+                                                          const size_t                    field_row_stride,
+                                                          const size_t                    field_slice_stride,
+                                                          const float                     threshold,
+                                                          const uint3                     chunks,
+                                                          const uint3                     cells)
   {
     const uint32_t warp = threadIdx.x / 32;
     const uint32_t thread = threadIdx.x % 32;
@@ -171,7 +171,7 @@ namespace {
                                                                              counts.e0 + counts.e1 + counts.e2,
                                                                              counts.e0 + counts.e1 + counts.e2 + counts.e3);
           }
-          if (indexed && vsum) {
+          if (vsum) {
             out_vertex_level0_d[32 * 5 * blockIdx.x + 32 * y + thread] = make_uint4(vc0,
                                                                                     vc0 + vc1,
                                                                                     vc0 + vc1 + vc2,
@@ -182,9 +182,101 @@ namespace {
         }
       }
       cell.z++;
-      if (indexed) {
-        out_vertex_sideband_d[32 * (5 * blockIdx.x + y) + threadIdx.x] = vsum;
+      out_vertex_sideband_d[32 * (5 * blockIdx.x + y) + threadIdx.x] = vsum;
+      out_index_sideband_d[32 * (5 * blockIdx.x + y) + threadIdx.x] = isum;
+    }
+  }
+
+  template<class FieldType>
+  __global__ __launch_bounds__(32) void reduceBase(uint8_t* __restrict__           index_cases_d,
+                                                   uint4* __restrict__             out_index_level0_d,
+                                                   uint32_t* __restrict__          out_index_sideband_d,
+                                                   const uint8_t* __restrict__     index_count,
+                                                   const FieldType* __restrict__   field_d,
+                                                   const FieldType* __restrict__   field_end_d,
+                                                   const size_t                    field_row_stride,
+                                                   const size_t                    field_slice_stride,
+                                                   const float                     threshold,
+                                                   const uint3                     chunks,
+                                                   const uint3                     cells)
+  {
+    const uint32_t warp = threadIdx.x / 32;
+    const uint32_t thread = threadIdx.x % 32;
+    const uint32_t chunk_ix = blockIdx.x + warp;
+
+    uint3 chunk = make_uint3(chunk_ix % chunks.x,
+                             (chunk_ix / chunks.x) % chunks.y,
+                             (chunk_ix / chunks.x) / chunks.y);
+    uint3 cell = make_uint3(31 * chunk.x + thread,
+                            5 * chunk.y,
+                            5 * chunk.z);
+
+    // TODO check if it is faster to only process 31 cells and don't rely on cache for fetching field.
+
+    // One warp processes a 32 * 5 * 5 chunk, outputs 800 mc cases to base level and 800/5=160 sums to sideband.
+    const FieldType* ptr = field_d
+      + cell.z * field_slice_stride
+      + cell.y * field_row_stride
+      + cell.x;
+    float2 prev = fetch(ptr, field_end_d, field_row_stride, threshold, thread);
+    ptr += field_slice_stride;
+
+    bool xmask = cell.x < cells.x;
+    for (unsigned y = 0; y < 5; y++) {
+
+      unsigned isum = 0;
+      unsigned vsum = 0;
+      bool zmask = cell.z < cells.z;
+      if (zmask) {
+        float2 next = fetch(ptr, field_end_d, field_row_stride, threshold, thread);
+        ptr += field_slice_stride;
+
+        float2 t0 = make_float2(__fmaf_rn(float(1 << 4), next.x, prev.x),
+                                __fmaf_rn(float(1 << 4), next.y, prev.y));
+
+        prev = next;
+
+        float2 tt = make_float2(__shfl_down_sync(0xffffffff, t0.x, 1),
+                                __shfl_down_sync(0xffffffff, t0.y, 1));
+
+        if (xmask && thread < 31) {
+          uint32_t g0 = static_cast<uint32_t>(__fmaf_rn(2.f, tt.x, t0.x));
+          uint32_t g1 = static_cast<uint32_t>(__fmaf_rn(2.f, tt.y, t0.y));
+          uint32_t s0 = __byte_perm(g0, g1, (4 << 12) | (2 << 8) | (1 << 4) | (0 << 0));
+          g0 = g0 | (s0 >> 6);
+          g1 = g1 | (g1 >> 6);
+
+          uint5 cases = {
+            __byte_perm(g0, 0, (4 << 12) | (4 << 8) | (4 << 4) | (0 << 0)),
+            __byte_perm(g0, 0, (4 << 12) | (4 << 8) | (4 << 4) | (1 << 0)),
+            __byte_perm(g0, 0, (4 << 12) | (4 << 8) | (4 << 4) | (2 << 0)),
+            __byte_perm(g1, 0, (4 << 12) | (4 << 8) | (4 << 4) | (0 << 0)),
+            __byte_perm(g1, 0, (4 << 12) | (4 << 8) | (4 << 4) | (1 << 0))
+          };
+          uint5 counts{
+            cell.y + 0u < cells.y ? index_count[cases.e0] : 0u,
+            cell.y + 1u < cells.y ? index_count[cases.e1] : 0u,
+            cell.y + 2u < cells.y ? index_count[cases.e2] : 0u,
+            cell.y + 3u < cells.y ? index_count[cases.e3] : 0u,
+            cell.y + 4u < cells.y ? index_count[cases.e4] : 0u,
+          };
+
+          isum = counts.e0 + counts.e1 + counts.e2 + counts.e3 + counts.e4;
+          if (isum) {
+            // MC cases and HP base level is only visited if sum is nonzero
+            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 0] = cases.e0;
+            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 1] = cases.e1;
+            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 2] = cases.e2;
+            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 3] = cases.e3;
+            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 4] = cases.e4;
+            out_index_level0_d[32 * 5 * blockIdx.x + 32 * y + thread] = make_uint4(counts.e0,
+                                                                                   counts.e0 + counts.e1,
+                                                                                   counts.e0 + counts.e1 + counts.e2,
+                                                                                   counts.e0 + counts.e1 + counts.e2 + counts.e3);
+          }
+        }
       }
+      cell.z++;
       out_index_sideband_d[32 * (5 * blockIdx.x + y) + threadIdx.x] = isum;
     }
   }
@@ -730,66 +822,77 @@ void ComputeStuff::MC::buildPN(Context* ctx,
                                bool alwaysExtract = true)
 {
   if (buildPyramid) {
+    // Indexed pyramid buildup
     if (ctx->indexed) {
-      ::reduce_base<float, true><<<ctx->chunk_total, 32, 0, stream>>>(ctx->index_cases_d,                   // block writes 5*5*32=800 uint8's
-                                                                      ctx->vertex_pyramid + ctx->level_offsets[0], // block writes 5*32 uvec4's
-                                                                      ctx->vertex_sidebands[0],                    // block writes 5*32 uint32's
-                                                                      ctx->index_pyramid + ctx->level_offsets[0], // block writes 5*32 uvec4's
-                                                                      ctx->index_sidebands[0],                    // block writes 5*32 uint32's
-                                                                      ctx->tables->index_count,
-                                                                      field_d,
-                                                                      field_d + size_t(field_size.x) * field_size.y * field_size.z,
-                                                                      size_t(field_size.x),
-                                                                      size_t(field_size.x) * field_size.y,
-                                                                      threshold,
-                                                                      ctx->chunks,
-                                                                      ctx->cells);
-    }
-    else {
-      ::reduce_base<float, false><<<ctx->chunk_total, 32, 0, stream>>>(ctx->index_cases_d,                   // block writes 5*5*32=800 uint8's
-                                                                       nullptr,
-                                                                       nullptr,
-                                                                       ctx->index_pyramid + ctx->level_offsets[0], // block writes 5*32 uvec4's
-                                                                       ctx->index_sidebands[0],                    // block writes 5*32 uint32's
-                                                                       ctx->tables->index_count,
-                                                                       field_d,
-                                                                       field_d + size_t(field_size.x) * field_size.y * field_size.z,
-                                                                       size_t(field_size.x),
-                                                                       size_t(field_size.x) * field_size.y,
-                                                                       threshold,
-                                                                       ctx->chunks,
-                                                                       ctx->cells);
-    }
-
-    bool sb = true;
-    for (unsigned i = 1; i < ctx->levels - 3; i++) {
-      const auto blocks = (ctx->level_sizes[i] + 31) / 32;
-      reduce1<<<blocks, 5 * 32, 0, stream>>>(ctx->index_pyramid + ctx->level_offsets[i],    // Each block will write 32 uvec4's into this
-                                             ctx->index_sidebands[sb ? 1 : 0],              // Each block will write 32 uint32's into this
-                                             ctx->level_sizes[i],                           // Number of uvec4's in level i
-                                             ctx->index_sidebands[sb ? 0 : 1],              // Input, each block will read 5*32=160 values from here
-                                             ctx->level_sizes[i - 1]);                      // Number of sideband elements from level i-1
-      if (ctx->indexed) {
-        reduce1<<<blocks, 5 * 32, 0, stream>>>(ctx->vertex_pyramid + ctx->level_offsets[i], // Each block will write 32 uvec4's into this
-                                               ctx->vertex_sidebands[sb ? 1 : 0],           // Each block will write 32 uint32's into this
-                                               ctx->level_sizes[i],                         // Number of uvec4's in level i
-                                               ctx->vertex_sidebands[sb ? 0 : 1],           // Input, each block will read 5*32=160 values from here
-                                               ctx->level_sizes[i - 1]);                    // Number of sideband elements from level i-1
+      ::reduceBaseIndexed<float> << <ctx->chunk_total, 32, 0, stream >> > (ctx->index_cases_d,                   // block writes 5*5*32=800 uint8's
+                                                                           ctx->vertex_pyramid + ctx->level_offsets[0], // block writes 5*32 uvec4's
+                                                                           ctx->vertex_sidebands[0],                    // block writes 5*32 uint32's
+                                                                           ctx->index_pyramid + ctx->level_offsets[0], // block writes 5*32 uvec4's
+                                                                           ctx->index_sidebands[0],                    // block writes 5*32 uint32's
+                                                                           ctx->tables->index_count,
+                                                                           field_d,
+                                                                           field_d + size_t(field_size.x) * field_size.y * field_size.z,
+                                                                           size_t(field_size.x),
+                                                                           size_t(field_size.x) * field_size.y,
+                                                                           threshold,
+                                                                           ctx->chunks,
+                                                                           ctx->cells);
+      bool sb = true;
+      for (unsigned i = 1; i < ctx->levels - 3; i++) {
+        const auto blocks = (ctx->level_sizes[i] + 31) / 32;
+        reduce1 << <blocks, 5 * 32, 0, stream >> > (ctx->index_pyramid + ctx->level_offsets[i],    // Each block will write 32 uvec4's into this
+                                                    ctx->index_sidebands[sb ? 1 : 0],              // Each block will write 32 uint32's into this
+                                                    ctx->level_sizes[i],                           // Number of uvec4's in level i
+                                                    ctx->index_sidebands[sb ? 0 : 1],              // Input, each block will read 5*32=160 values from here
+                                                    ctx->level_sizes[i - 1]);                      // Number of sideband elements from level i-1
+        reduce1 << <blocks, 5 * 32, 0, stream >> > (ctx->vertex_pyramid + ctx->level_offsets[i], // Each block will write 32 uvec4's into this
+                                                    ctx->vertex_sidebands[sb ? 1 : 0],           // Each block will write 32 uint32's into this
+                                                    ctx->level_sizes[i],                         // Number of uvec4's in level i
+                                                    ctx->vertex_sidebands[sb ? 0 : 1],           // Input, each block will read 5*32=160 values from here
+                                                    ctx->level_sizes[i - 1]);                    // Number of sideband elements from level i-1
+        sb = !sb;
       }
-      sb = !sb;
+      reduceApex << <1, 4 * 32, 0, stream >> > (ctx->index_pyramid + 8,
+                                                ctx->sum_d,
+                                                ctx->index_sidebands[sb ? 0 : 1],
+                                                ctx->level_sizes[ctx->levels - 4]);
+      reduceApex << <1, 4 * 32, 0, stream >> > (ctx->vertex_pyramid + 8,
+                                                ctx->sum_d + 1,
+                                                ctx->vertex_sidebands[sb ? 0 : 1],
+                                                ctx->level_sizes[ctx->levels - 4]);
     }
-    reduceApex<<<1, 4 * 32, 0, stream>>>(ctx->index_pyramid + 8,
-                                         ctx->sum_d,
-                                         ctx->index_sidebands[sb ? 0 : 1],
-                                         ctx->level_sizes[ctx->levels - 4]);
-    if (ctx->indexed) {
-      reduceApex<<<1, 4 * 32, 0, stream>>>(ctx->vertex_pyramid + 8,
-                                           ctx->sum_d + 1,
-                                           ctx->vertex_sidebands[sb ? 0 : 1],
-                                           ctx->level_sizes[ctx->levels - 4]);
-    }
-  }
 
+    // Non-indexed pyramid buildup
+    else {
+      ::reduceBase<float> << <ctx->chunk_total, 32, 0, stream >> > (ctx->index_cases_d,                   // block writes 5*5*32=800 uint8's
+                                                                    ctx->index_pyramid + ctx->level_offsets[0], // block writes 5*32 uvec4's
+                                                                    ctx->index_sidebands[0],                    // block writes 5*32 uint32's
+                                                                    ctx->tables->index_count,
+                                                                    field_d,
+                                                                    field_d + size_t(field_size.x) * field_size.y * field_size.z,
+                                                                    size_t(field_size.x),
+                                                                    size_t(field_size.x) * field_size.y,
+                                                                    threshold,
+                                                                    ctx->chunks,
+                                                                    ctx->cells);
+
+      bool sb = true;
+      for (unsigned i = 1; i < ctx->levels - 3; i++) {
+        const auto blocks = (ctx->level_sizes[i] + 31) / 32;
+        reduce1 << <blocks, 5 * 32, 0, stream >> > (ctx->index_pyramid + ctx->level_offsets[i],    // Each block will write 32 uvec4's into this
+                                                    ctx->index_sidebands[sb ? 1 : 0],              // Each block will write 32 uint32's into this
+                                                    ctx->level_sizes[i],                           // Number of uvec4's in level i
+                                                    ctx->index_sidebands[sb ? 0 : 1],              // Input, each block will read 5*32=160 values from here
+                                                    ctx->level_sizes[i - 1]);                      // Number of sideband elements from level i-1
+        sb = !sb;
+      }
+      reduceApex << <1, 4 * 32, 0, stream >> > (ctx->index_pyramid + 8,
+                                                ctx->sum_d,
+                                                ctx->index_sidebands[sb ? 0 : 1],
+                                                ctx->level_sizes[ctx->levels - 4]);
+    }
+
+  }
   if (output_buffer) {
     ::runExtractionPN<<<1, 32, 0, stream>>>(reinterpret_cast<float*>(output_buffer),
                                             nullptr,
