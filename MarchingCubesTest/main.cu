@@ -32,6 +32,7 @@ namespace {
   uint32_t ny = 255;
   uint32_t nz = 255;
   bool wireframe = false;
+  bool recreate_context = true;
   bool indexed = true;
   float threshold = 0.f;
 
@@ -45,31 +46,35 @@ namespace {
   void onKey(GLFWwindow* window, int key, int scancode, int action, int mods)
   {
     bool print_threshold = false;
-    if (key == GLFW_KEY_W && action == GLFW_PRESS) {
-      wireframe = !wireframe;
-      fprintf(stderr, "Wireframe: %s\n", wireframe ? "on" : "off");
+    if (action == GLFW_PRESS) {
+      if (key == GLFW_KEY_W) {
+        wireframe = !wireframe;
+        fprintf(stderr, "Wireframe: %s\n", wireframe ? "on" : "off");
+      }
+      else if (key == GLFW_KEY_UP) {
+        threshold += 10.f; print_threshold = true;
+      }
+      else if (key == GLFW_KEY_DOWN) {
+        threshold -= 10.f; print_threshold = true;
+      }
+      else if (key == GLFW_KEY_RIGHT) {
+        threshold += 0.01f; print_threshold = true;
+      }
+      else if (key == GLFW_KEY_LEFT) {
+        threshold -= 0.01f; print_threshold = true;
+      }
+      else if (key == GLFW_KEY_BACKSPACE) {
+        threshold = 0.f; print_threshold = true;
+      }
+      else if (key == GLFW_KEY_I) {
+        indexed = !indexed;
+        recreate_context = true;
+        fprintf(stderr, "Mode is %s", indexed ? "indexed" : "non-indexed");
+      }
+      if (print_threshold) {
+        fprintf(stderr, "Iso-value: %f\n", threshold);
+      }
     }
-    else if (key == GLFW_KEY_UP) {
-      threshold += 10.f; print_threshold = true;
-    }
-    else if (key == GLFW_KEY_DOWN) {
-      threshold -= 10.f; print_threshold = true;
-    }
-    else if (key == GLFW_KEY_RIGHT) {
-      threshold += 0.01f; print_threshold = true;
-    }
-    else if (key == GLFW_KEY_LEFT) {
-      threshold -= 0.01f; print_threshold = true;
-    }
-    else if (key == GLFW_KEY_BACKSPACE) {
-      threshold = 0.f; print_threshold = true;
-    }
-
-    if (print_threshold) {
-      fprintf(stderr, "Iso-value: %f\n", threshold);
-    }
-
-
   }
 
 
@@ -529,9 +534,6 @@ int main(int argc, char** argv)
 
 
   auto* tables = createTables(stream);
-  auto* ctx = createContext(tables, make_uint3(nx-1, ny-1, nz-1), true, stream);
-
-  
 
   GLuint simpleVS = createShader(simpleVS_src, GL_VERTEX_SHADER);
   assert(simpleVS != 0);
@@ -567,14 +569,21 @@ int main(int argc, char** argv)
   auto timer = std::chrono::high_resolution_clock::now();
   float cuda_ms = 0.f;
   unsigned frames = 0;
+
+  ComputeStuff::MC::Context* ctx = nullptr;
   while (!glfwWindowShouldClose(win)) {
     int width, height;
     glfwGetWindowSize(win, &width, &height);
 
     uint32_t vertex_count = 0;
-    uint32_t Nv = 0;
     uint32_t index_count = 0;
     {
+      if (ctx == nullptr || recreate_context) {
+        freeContext(ctx, stream);
+        ctx = createContext(tables, make_uint3(nx - 1, ny - 1, nz - 1), indexed, stream);
+        recreate_context = false;
+      }
+
       void* cudaBuf_d = nullptr;
       size_t cudaBuf_size = 0;
 
@@ -592,12 +601,10 @@ int main(int argc, char** argv)
                                 threshold,
                                 stream,
                                 true,
-                                false);
+                                true);
       CHECKED_CUDA(cudaEventRecord(events[2 * eventCounter + 1], stream));
       CHECKED_CUDA(cudaGraphicsUnmapResources(1, &bufferResource, stream));
       ComputeStuff::MC::getCounts(ctx, &vertex_count, &index_count, stream);
-      Nv = vertex_count;
-      vertex_count = index_count;
       
       eventCounter = (eventCounter + 1) & 3;
       float ms = 0;
@@ -629,7 +636,7 @@ int main(int argc, char** argv)
                                   threshold,
                                   stream,
                                   false,
-                                  true);
+                                  indexed);
         CHECKED_CUDA(cudaGraphicsUnmapResources(1, &bufferResource, stream));
       }
     }
@@ -705,12 +712,17 @@ int main(int argc, char** argv)
       std::chrono::duration<double> elapsed = now - timer;
       auto s = elapsed.count();
       if (10 < frames && 0.5 < s) {
-        fprintf(stderr, "%.2f FPS (%.2f MVPS) cuda avg: %.2fms (%.2f MVPS) %ux%ux%u Nv=%u Ni=%u\n",
+        size_t free, total;
+        CHECKED_CUDA(cudaMemGetInfo(&free, &total));
+        fprintf(stderr, "%.2f FPS (%.2f MVPS) cuda avg: %.2fms (%.2f MVPS) %ux%ux%u Nv=%u Ni=%u ix=%s memfree=%zumb/%zumb\n",
                 frames / s, (float(frames)* nx *ny * nz) / (1000000.f * s),
                 cuda_ms/frames, (float(frames)* nx* ny* nz) / (1000.f * cuda_ms),
                 nx, ny, nz,
-                Nv /*vertex_count*/,
-                index_count);
+                vertex_count,
+                index_count,
+                indexed ? "y" : "n",
+                (free + 1024 * 1024 - 1) / (1024 * 1024),
+                (total + 1024 * 1024 - 1) / (1024 * 1024));
         timer = now;
         frames = 0;
         cuda_ms = 0.f;

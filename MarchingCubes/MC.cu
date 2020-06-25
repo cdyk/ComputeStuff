@@ -166,11 +166,12 @@ namespace {
         }
       }
       cell.z++;
-      out_vertex_sideband_d[32 * (5 * blockIdx.x + y) + threadIdx.x] = vsum;
+      if (indexed) {
+        out_vertex_sideband_d[32 * (5 * blockIdx.x + y) + threadIdx.x] = vsum;
+      }
       out_index_sideband_d[32 * (5 * blockIdx.x + y) + threadIdx.x] = isum;
     }
   }
-
 
 
 
@@ -403,6 +404,53 @@ namespace {
     output[5] = nn * nz;
   }
 
+
+  __global__ void extractIndexedVertexPN(float* __restrict__          output,
+                                         const uint4* __restrict__    pyramid,
+                                         const float* __restrict__    field,
+                                         const uint8_t* __restrict__  index_cases,
+                                         const uint8_t* __restrict__  index_table,
+                                         const size_t                 field_row_stride,
+                                         const size_t                 field_slice_stride,
+                                         const uint3                  field_offset,
+                                         const uint3                  field_max_index,
+                                         const uint32_t               output_count,
+                                         const uint2                  chunks,
+                                         const float3                 scale,
+                                         const float                  threshold)
+  {
+
+    uint32_t ix = blockDim.x * blockIdx.x + threadIdx.x;
+    if (ix < output_count) {
+      const uint32_t* level_offset = (const uint32_t*)(pyramid);
+
+      hp5_result r = traverseDown(pyramid, level_offset, level_offset[15], ix);
+
+      uint8_t index_case = index_cases[r.offset];
+      uint8_t index_code = index_table[16u * index_case + r.remainder];
+      uint3 p0 = decodeCellPosition(chunks, r.offset);
+
+      p0.x += (index_code >> 3) & 1;
+      p0.y += (index_code >> 4) & 1;
+      p0.z += (index_code >> 5) & 1;
+      uint3 p1 = p0;
+      p1.x += (index_code >> 0) & 1;
+      p1.y += (index_code >> 1) & 1;
+      p1.z += (index_code >> 2) & 1;
+
+      emitVertexNormal(output + 6 * ix,
+                       field,
+                       scale,
+                       field_offset,
+                       field_max_index,
+                       field_row_stride,
+                       field_slice_stride,
+                       threshold,
+                       p0,
+                       p1);
+    }
+  }
+
   __global__ void extractVertexPN(float* __restrict__          output,
                                   const uint4* __restrict__    pyramid,
                                   const float* __restrict__    field,
@@ -449,9 +497,10 @@ namespace {
     }
   }
 
-
-  __global__ void runExtractionPN(float* __restrict__          output,
-                                  const uint4* __restrict__    pyramid,
+  __global__ void runExtractionPN(float* __restrict__          vertex_output,
+                                  uint32_t* __restrict__       index_output,
+                                  const uint4* __restrict__    vertex_pyramid,
+                                  const uint4* __restrict__    index_pyramid,
                                   const float* __restrict__    field,
                                   const uint8_t* __restrict__  index_cases,
                                   const uint8_t* __restrict__  index_table,
@@ -459,7 +508,8 @@ namespace {
                                   const size_t                 field_slice_stride,
                                   const uint3                  field_offset,
                                   const uint3                  field_size,
-                                  const uint32_t               output_count,
+                                  const uint32_t               vertex_capacity,
+                                  const uint32_t               index_capacity,
                                   const uint2                  chunks,
                                   const float3                 scale,
                                   const float                  threshold,
@@ -467,29 +517,31 @@ namespace {
                                   bool                         indexed)
   {
     if (threadIdx.x == 0) {
-      uint32_t output_count_clamped = min(output_count, pyramid[8].x);
-      if (output_count_clamped) {
-        if (indexed) {
-          extractVertexPN <<<(output_count_clamped + 255) / 256, 256 >> > (output,
-                                                                                 pyramid,
-                                                                                 field,
-                                                                                 index_cases,
-                                                                                 index_table,
-                                                                                 field_row_stride,
-                                                                                 field_slice_stride,
-                                                                                 field_offset,
-                                                                                 make_uint3(field_size.x - 1,
-                                                                                             field_size.y - 1,
-                                                                                             field_size.z - 1),
-                                                                                 output_count_clamped,
-                                                                                 chunks,
-                                                                                 scale,
-                                                                                 threshold);
-
+      if (indexed) {
+        uint32_t vertex_count_clamped = min(vertex_capacity, vertex_pyramid[8].x);
+        if (vertex_count_clamped) {
+          extractIndexedVertexPN<<<(vertex_count_clamped + 255) / 256, 256>>>(vertex_output,
+                                                                              vertex_pyramid,
+                                                                              field,
+                                                                              index_cases,
+                                                                              index_table,
+                                                                              field_row_stride,
+                                                                              field_slice_stride,
+                                                                              field_offset,
+                                                                              make_uint3(field_size.x - 1,
+                                                                                         field_size.y - 1,
+                                                                                         field_size.z - 1),
+                                                                              vertex_count_clamped,
+                                                                              chunks,
+                                                                              scale,
+                                                                              threshold);
         }
-        else {
-          extractVertexPN<<<(output_count_clamped + 255) / 256, 256>>>(output,
-                                                                       pyramid,
+      }
+      else {
+        uint32_t vertex_count_clamped = min(vertex_capacity, index_pyramid[8].x);
+        if (vertex_count_clamped) {
+          extractVertexPN<<<(vertex_count_clamped + 255) / 256, 256>>>(vertex_output,
+                                                                       index_pyramid,
                                                                        field,
                                                                        index_cases,
                                                                        index_table,
@@ -499,7 +551,7 @@ namespace {
                                                                        make_uint3(field_size.x - 1,
                                                                                   field_size.y - 1,
                                                                                   field_size.z - 1),
-                                                                       output_count_clamped,
+                                                                       vertex_count_clamped,
                                                                        chunks,
                                                                        scale,
                                                                        threshold);
@@ -610,6 +662,27 @@ ComputeStuff::MC::Context* ComputeStuff::MC::createContext(const Tables* tables,
   return ctx;
 }
 
+void ComputeStuff::MC::freeContext(Context* ctx, cudaStream_t stream)
+{
+  CHECKED_CUDA(cudaStreamSynchronize(stream));
+  if (ctx == nullptr) return;
+
+  if (ctx->index_cases_d) { CHECKED_CUDA(cudaFree(ctx->index_cases_d)); ctx->index_cases_d = nullptr; }
+  if (ctx->index_pyramid) { CHECKED_CUDA(cudaFree(ctx->index_pyramid)); ctx->index_pyramid = nullptr; }
+  if (ctx->index_sidebands[0]) { CHECKED_CUDA(cudaFree(ctx->index_sidebands[0])); ctx->index_sidebands[0] = nullptr; }
+  if (ctx->index_sidebands[0]) { CHECKED_CUDA(cudaFree(ctx->index_sidebands[1])); ctx->index_sidebands[1] = nullptr; }
+
+  if (ctx->index_cases_d) { CHECKED_CUDA(cudaFree(ctx->vertex_cases_d)); ctx->vertex_cases_d = nullptr; }
+  if (ctx->index_pyramid) { CHECKED_CUDA(cudaFree(ctx->vertex_pyramid)); ctx->vertex_pyramid = nullptr; }
+  if (ctx->index_sidebands[0]) { CHECKED_CUDA(cudaFree(ctx->vertex_sidebands[0])); ctx->vertex_sidebands[0] = nullptr; }
+  if (ctx->index_sidebands[0]) { CHECKED_CUDA(cudaFree(ctx->vertex_sidebands[1])); ctx->vertex_sidebands[1] = nullptr; }
+
+  if (ctx->sum_d) { CHECKED_CUDA(cudaFreeHost(ctx->sum_d)); ctx->sum_d = nullptr; }
+
+  delete ctx;
+}
+
+
 void ComputeStuff::MC::destroyContext(Context* ctx)
 {
   delete ctx;
@@ -702,6 +775,8 @@ void ComputeStuff::MC::buildPN(Context* ctx,
 
   if (output_buffer) {
     ::runExtractionPN<<<1, 32, 0, stream>>>(reinterpret_cast<float*>(output_buffer),
+                                            nullptr,
+                                            ctx->vertex_pyramid,
                                             ctx->index_pyramid,
                                             field_d,
                                             ctx->index_cases_d,
@@ -711,6 +786,7 @@ void ComputeStuff::MC::buildPN(Context* ctx,
                                             field_offset,
                                             field_size,
                                             static_cast<uint32_t>(output_buffer_size / (6 * sizeof(float))),
+                                            0,
                                             make_uint2(ctx->chunks.x, ctx->chunks.y),
                                             make_float3(1.f / ctx->cells.x,
                                                         1.f / ctx->cells.y,
@@ -718,5 +794,5 @@ void ComputeStuff::MC::buildPN(Context* ctx,
                                             threshold,
                                             alwaysExtract,
                                             ctx->indexed);
-}
+  }
 }
