@@ -28,9 +28,9 @@ namespace {
   };
 
   FieldFormat format = FieldFormat::Float;
-  uint32_t nx = 255;
-  uint32_t ny = 255;
-  uint32_t nz = 255;
+  uint32_t nx = 50;
+  uint32_t ny = 56;
+  uint32_t nz = 71;
   bool wireframe = false;
   bool recreate_context = true;
   bool indexed = true;
@@ -738,13 +738,13 @@ int main(int argc, char** argv)
     translateMatrix(center, -0.5f, -0.5f, -0.5f);
 
     float rx[16];
-    rotMatrixX(rx, static_cast<float>(1.1 * seconds));
+    rotMatrixX(rx, static_cast<float>(0*1.1 * seconds));
 
     float ry[16];
-    rotMatrixY(ry, static_cast<float>(1.7 * seconds));
+    rotMatrixY(ry, static_cast<float>(0*1.7 * seconds));
 
     float rz[16];
-    rotMatrixZ(rz, static_cast<float>(1.3 * seconds));
+    rotMatrixZ(rz, static_cast<float>(0*1.3 * seconds));
 
     float shift[16];
     translateMatrix(shift, 0.f, 0.f, -2.0f);
@@ -780,14 +780,17 @@ int main(int argc, char** argv)
       glUniformMatrix4fv(1, 1, GL_FALSE, frustum_shift_rz_ry_rx);
       glUniform4f(2, 0.6f, 0.6f, 0.8f, 1.f);
       glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, cudaIndexBuf);
-      glDrawElements(GL_LINES, index_count, GL_UNSIGNED_INT, nullptr);
+      glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+      //glDrawElements(GL_TRIANGLES, index_count, GL_UNSIGNED_INT, nullptr);
+      glDrawArrays(GL_POINTS, 0, vertex_count);
     }
     else {
-      glUseProgram(simplePrg);
+      glUseProgram(solidPrg);
       glUniformMatrix4fv(0, 1, GL_FALSE, rz_ry_rx);
       glUniformMatrix4fv(1, 1, GL_FALSE, frustum_shift_rz_ry_rx);
       glUniform4f(2, 0.6f, 0.6f, 0.8f, 1.f);
-      glDrawArrays(GL_TRIANGLES, 0, vertex_count);
+      glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+      glDrawArrays(GL_POINTS, 0, vertex_count);
     }
     glDisable(GL_POLYGON_OFFSET_FILL);
 

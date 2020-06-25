@@ -144,11 +144,11 @@ namespace {
           uint32_t case_y3 = __byte_perm(g1, 0, (4 << 12) | (4 << 8) | (4 << 4) | (0 << 0));
           uint32_t case_y4 = __byte_perm(g1, 0, (4 << 12) | (4 << 8) | (4 << 4) | (1 << 0));
 
-          uint32_t ic_y0 = (cell.z < grid_max_index.z) && (cell.y + 0u) <= grid_max_index.y ? index_count[case_y0] : 0u;
-          uint32_t ic_y1 = (cell.z < grid_max_index.z) && (cell.y + 1u) <= grid_max_index.y ? index_count[case_y1] : 0u;
-          uint32_t ic_y2 = (cell.z < grid_max_index.z) && (cell.y + 2u) <= grid_max_index.y ? index_count[case_y2] : 0u;
-          uint32_t ic_y3 = (cell.z < grid_max_index.z) && (cell.y + 3u) <= grid_max_index.y ? index_count[case_y3] : 0u;
-          uint32_t ic_y4 = (cell.z < grid_max_index.z) && (cell.y + 4u) <= grid_max_index.y ? index_count[case_y4] : 0u;
+          uint32_t ic_y0 = (cell.x < grid_max_index.x) && (cell.z < grid_max_index.z) && ((cell.y + 0u) < grid_max_index.y) ? index_count[case_y0] : 0u;
+          uint32_t ic_y1 = (cell.x < grid_max_index.x) && (cell.z < grid_max_index.z) && ((cell.y + 1u) < grid_max_index.y) ? index_count[case_y1] : 0u;
+          uint32_t ic_y2 = (cell.x < grid_max_index.x) && (cell.z < grid_max_index.z) && ((cell.y + 2u) < grid_max_index.y) ? index_count[case_y2] : 0u;
+          uint32_t ic_y3 = (cell.x < grid_max_index.x) && (cell.z < grid_max_index.z) && ((cell.y + 3u) < grid_max_index.y) ? index_count[case_y3] : 0u;
+          uint32_t ic_y4 = (cell.x < grid_max_index.x) && (cell.z < grid_max_index.z) && ((cell.y + 4u) < grid_max_index.y) ? index_count[case_y4] : 0u;
 
           uint32_t vc_y0 = axisCountFromCase(case_y0);
           uint32_t vc_y1 = axisCountFromCase(case_y1);
@@ -576,26 +576,70 @@ namespace {
      // FIXME: no point in up-traversal if cell doesn't change.
      // FIXME: If extract 3 in a go, organize traversals to reduce up-traversal.
 
+
     uint32_t ix = blockDim.x * blockIdx.x + threadIdx.x;
     if (ix < output_count) {
       const uint32_t* level_offset = (const uint32_t*)(index_pyramid);
+      const uint32_t level_count = level_offset[15];
 
-      hp5_result r = traverseDown(index_pyramid, level_offset, level_offset[15], ix);
+      hp5_result r = traverseDown(index_pyramid, level_offset, level_count, ix);
 
       uint8_t index_case = index_cases[r.offset];
-      uint3 p0 = decodeCellPosition(chunks, r.offset);
+      uint8_t index_code = index_table[16u * index_case + r.remainder];
 
-      uint32_t axes = piercingAxesFromCase(index_case);
-      if (0 < r.remainder) axes = axes & (axes - 1);  // remove rightmost bit
-      if (1 < r.remainder) axes = axes & (axes - 1);  // remove rightmost bit
-      axes = axes & (-axes);                          // isolate rightmost bit
+      uint8_t q0 = index_code & 0b111;
+      assert(q0 == 0b100 || q0 == 0b010 || q0 == 0b001);
 
-      uint3 p1 = p0;
-      p1.x += (axes >> 1) & 1;
-      p1.y += (axes >> 2) & 1;
-      p1.z += (axes >> 4) & 1;
+      // Find position within chunk
+      uint32_t t1 = r.offset % 800;
 
-      indices[ix] = ix;
+
+      uint3 chunk_pos = make_uint3(((t1 / 5) % 32),
+                                   ((t1 % 5)),
+                                   ((t1 / 5) / 32));
+
+      // Adjust linear offset
+      //
+      // Layout of each chunk:
+      //
+      // [z:5][x:32][y:5] (but x==31 is discarded, so x==30 jumps to next chunk).
+      //
+      // The chunks again is layed out as.
+      //
+      // FIXME: Check if matching chunk and in-chunk ordering simplifies stuff, x and 31 will be a mess, but maybe for the rest?
+      //
+      // [z][y][x].
+
+      uint32_t vertex_offset = (r.offset +
+                                ((index_code & (1 << 3)) ? (chunk_pos.x == 30 ? (800 - 30 * 5) : 5) : 0) +
+                                ((index_code & (1 << 4)) ? (chunk_pos.y == 4 ? (800 * chunks.x - 4) : 1) : 0) +
+                                ((index_code & (1 << 5)) ? (chunk_pos.z == 4 ? (800 * chunks.x * chunks.y - 4 * 5 * 32) : (5 * 32)): 0));
+
+      uint32_t vertex_cell_case = index_cases[vertex_offset];
+      uint32_t axes = axisCountFromCase(vertex_cell_case);
+
+      int32_t vertex_index = 0;
+      for (unsigned l = 0; l < level_count; l++) {
+        uint32_t rem = vertex_offset % 5;
+        vertex_offset = vertex_offset / 5;
+        uint4 item = vertex_pyramid[level_offset[l] + vertex_offset];
+        if (rem == 1) vertex_index += item.x;
+        else if (rem == 2) vertex_index += item.y;
+        else if (rem == 3) vertex_index += item.z;
+        else if (rem == 4) vertex_index += item.w;
+      }
+      //assert(vertex_index + r.remainder == ix);
+
+      if (index_code & (1<<1)) {       // Want Y-axis
+        axes &= 0b0010;           // Add 1 for X-axis if present
+      }
+      else if (index_code & (1<<2)) {  // Want Z-axis
+        axes &= 0b0110;           // Add 1 for X and Y-axes if present
+      }                           // Else X-axis and we need no adjustment
+      uint32_t n;
+      asm("popc.b32 %0, %1;": "=r"(n) : "r"(axes));
+      vertex_index += n;
+      indices[ix] = vertex_index;
     }
   }
 
@@ -764,9 +808,16 @@ ComputeStuff::MC::Context* ComputeStuff::MC::createContext(const Tables* tables,
   assert(5 * (ctx->chunks.y - 1) < ctx->grid_size.y);
   assert(5 * (ctx->chunks.z - 1) < ctx->grid_size.z);
 
-  assert(ctx->grid_size.x <= 31 * ctx->chunks.x);  // make sure grid is large enough
-  assert(ctx->grid_size.y <= 5 * ctx->chunks.y);
-  assert(ctx->grid_size.z <= 5 * ctx->chunks.z);
+  if (ctx->indexed) {
+    assert(ctx->grid_size.x <= 31 * ctx->chunks.x);  // make sure grid is large enough
+    assert(ctx->grid_size.y <= 5 * ctx->chunks.y);
+    assert(ctx->grid_size.z <= 5 * ctx->chunks.z);
+  }
+  else {
+    assert(ctx->grid_size.x <= 31 * ctx->chunks.x + 1);  // make sure grid is large enough
+    assert(ctx->grid_size.y <= 5 * ctx->chunks.y+ 1);
+    assert(ctx->grid_size.z <= 5 * ctx->chunks.z + 1);
+  }
 
   ctx->chunk_total = ctx->chunks.x * ctx->chunks.y * ctx->chunks.z;
   fprintf(stderr, "Grid size [%u x %u x %u]\n", ctx->grid_size.x, ctx->grid_size.y, ctx->grid_size.z);
