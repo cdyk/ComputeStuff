@@ -28,9 +28,9 @@ namespace {
   };
 
   FieldFormat format = FieldFormat::Float;
-  uint32_t nx = 50;
-  uint32_t ny = 56;
-  uint32_t nz = 71;
+  uint32_t nx = 256;
+  uint32_t ny = 256;
+  uint32_t nz = 256;
   bool wireframe = false;
   bool recreate_context = true;
   bool indexed = true;
@@ -95,7 +95,7 @@ in vec3 normal;
 out layout(location=0) vec4 outColor;
 uniform layout(location=2) vec4 color;
 void main() {
-  float d = max(0.0, dot(vec3(0,0,1), gl_FrontFacing ? -normal : normal));
+  float d = max(0.0, dot(vec3(0,0,1), normalize(gl_FrontFacing ? -normal : normal)));
   if(gl_FrontFacing)
     outColor = d * color.rgba;
   else
@@ -738,13 +738,13 @@ int main(int argc, char** argv)
     translateMatrix(center, -0.5f, -0.5f, -0.5f);
 
     float rx[16];
-    rotMatrixX(rx, static_cast<float>(0*1.1 * seconds));
+    rotMatrixX(rx, static_cast<float>(0.3 * seconds));
 
     float ry[16];
-    rotMatrixY(ry, static_cast<float>(0*1.7 * seconds));
+    rotMatrixY(ry, static_cast<float>(0.7 * seconds));
 
     float rz[16];
-    rotMatrixZ(rz, static_cast<float>(0*1.3 * seconds));
+    rotMatrixZ(rz, static_cast<float>(0.5 * seconds));
 
     float shift[16];
     translateMatrix(shift, 0.f, 0.f, -2.0f);
@@ -774,26 +774,20 @@ int main(int argc, char** argv)
     }
     glBindVertexArray(cudaVbo);
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    glUseProgram(simplePrg);
+    glUniformMatrix4fv(0, 1, GL_FALSE, rz_ry_rx);
+    glUniformMatrix4fv(1, 1, GL_FALSE, frustum_shift_rz_ry_rx);
+    glUniform4f(2, 0.6f, 0.6f, 0.8f, 1.f);
     if (indexed) {
-      glUseProgram(solidPrg);
-      glUniformMatrix4fv(0, 1, GL_FALSE, rz_ry_rx);
-      glUniformMatrix4fv(1, 1, GL_FALSE, frustum_shift_rz_ry_rx);
-      glUniform4f(2, 0.6f, 0.6f, 0.8f, 1.f);
       glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, cudaIndexBuf);
-      glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
       glDrawElements(GL_TRIANGLES, index_count, GL_UNSIGNED_INT, nullptr);
     }
     else {
-      glUseProgram(solidPrg);
-      glUniformMatrix4fv(0, 1, GL_FALSE, rz_ry_rx);
-      glUniformMatrix4fv(1, 1, GL_FALSE, frustum_shift_rz_ry_rx);
-      glUniform4f(2, 0.6f, 0.6f, 0.8f, 1.f);
-      glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
       glDrawArrays(GL_TRIANGLES, 0, vertex_count);
     }
     glDisable(GL_POLYGON_OFFSET_FILL);
 
-#if 0
+
     if (wireframe) {
       glUseProgram(solidPrg);
       glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
@@ -801,14 +795,15 @@ int main(int argc, char** argv)
       glUniformMatrix4fv(1, 1, GL_FALSE, frustum_shift_rz_ry_rx);
       glUniform4f(2, 1.f, 1.f, 1.f, 1.f);
       if (indexed) {
-        glDrawElements(GL_LINES, index_count, GL_UNSIGNED_INT, nullptr);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, cudaIndexBuf);
+        glDrawElements(GL_TRIANGLES, index_count, GL_UNSIGNED_INT, nullptr);
       }
       else {
-        glDrawArrays(GL_POINTS, 0, vertex_count);
+        glDrawArrays(GL_TRIANGLES, 0, vertex_count);
       }
       glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
     }
-#endif
+
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 
     glBindVertexArray(wireBoxVbo);

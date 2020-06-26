@@ -501,7 +501,7 @@ namespace {
                             field_slice_stride,
                             i1);
 
-    float t = 0.5;// (threshold - f0.w) / (f1.w - f0.w);
+    float t = (threshold - f0.w) / (f1.w - f0.w);
 
     float nx = scale.x * ((1.f - t) * f0.x + t * f1.x - threshold);
     float ny = scale.y * ((1.f - t) * f0.y + t * f1.y - threshold);
