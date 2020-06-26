@@ -49,32 +49,22 @@ namespace {
 
   __device__ __forceinline__ uint32_t piercingAxesFromCase(uint32_t c)
   {
-    return ((((c & 1) << 1) |
-             ((c & 1) << 2) |
-             ((c & 1) << 4) ) ^ c ) & 0b10110;
-  }
-
-  __device__ __forceinline__ uint32_t axisCountFromCase(const uint32_t c)
-  {
-    uint32_t n;
+    uint32_t a;
     asm("{\n"
         "  .reg .u32 t1, t2, t3;\n"
         "  bfe.s32 t1, %1, 0, 1;\n"     // Sign-extend bit 0 (0,0,0) over whole word
         "  xor.b32 t2, %1, t1;\n"       // XOR with (0,0,0) to see which corners change sign wrt (0,0,0).
-        "  and.b32 t3, t2, 0b10110;\n"  // Mask out (1,0,0), (0,1,0) and (0,0,1).
-        "  popc.b32 %0, t3;\n"          // Count number of 1's (should be 0..3).
+        "  and.b32 %0, t2, 0b10110;\n"  // Mask out (1,0,0), (0,1,0) and (0,0,1).
         "}"
-        : "=r"(n) :"r"(c));
+        : "=r"(a) : "r"(c));
+    return a;
+  }
 
-    unsigned q = piercingAxesFromCase(c);
-    assert(((q >> 1) & 1) + ((q >> 2) & 1) + ((q >> 4) & 1) == n);
-
-    unsigned m =
-      ((c & 1) ^ ((c >> 1) & 1)) +
-      ((c & 1) ^ ((c >> 2) & 1)) +
-      ((c & 1) ^ ((c >> 4) & 1));
-    assert(n == m);
-    assert(n <= 3);
+  __device__ __forceinline__ uint32_t axisCountFromCase(const uint32_t c)
+  {
+    uint32_t a = piercingAxesFromCase(c);
+    uint32_t n;
+    asm("popc.b32 %0, %1;": "=r"(n) : "r"(a));         // Count number of 1's (should be 0..3).
     return n;
   }
 
@@ -104,9 +94,7 @@ namespace {
                             5 * chunk.y,
                             5 * chunk.z);
 
-    // TODO check if it is faster to only process 31 cells and don't rely on cache for fetching field.
-
-    // One warp processes a 32 * 5 * 5 chunk, outputs 800 mc cases to base level and 800/5=160 sums to sideband.
+    // One warp processes a 31 * 5 * 5 chunk, outputs 800 mc cases to base level and 800/5=160 sums to sideband.
     const FieldType* ptr = field_d
                          + cell.z * field_slice_stride
                          + cell.y * field_row_stride
@@ -215,8 +203,6 @@ namespace {
     uint3 cell = make_uint3(31 * chunk.x + thread,
                             5 * chunk.y,
                             5 * chunk.z);
-
-    // TODO check if it is faster to only process 31 cells and don't rely on cache for fetching field.
 
     // One warp processes a 32 * 5 * 5 chunk, outputs 800 mc cases to base level and 800/5=160 sums to sideband.
     const FieldType* ptr = field_d
@@ -531,7 +517,6 @@ namespace {
                                          const float3                 scale,
                                          const float                  threshold)
   {
-
     uint32_t ix = blockDim.x * blockIdx.x + threadIdx.x;
     if (ix < output_count) {
       const uint32_t* level_offset = (const uint32_t*)(pyramid);
@@ -575,6 +560,8 @@ namespace {
   {
      // FIXME: no point in up-traversal if cell doesn't change.
      // FIXME: If extract 3 in a go, organize traversals to reduce up-traversal.
+     // FIXME: Try to let a thread do all three indices of a triangle with shared down-traversal
+     // FIXME: Try to recylce up-traversals, they might often be indentical (maybe check the table first to see if this is true)
 
 
     uint32_t ix = blockDim.x * blockIdx.x + threadIdx.x;
@@ -629,15 +616,15 @@ namespace {
         else if (rem == 4) vertex_index += item.w;
       }
 
-      if (index_code & 0b001) {
-        axes = 0b0000;
+      if (index_code & 0b001) {     // Vertex is on x-axis
+        axes = 0b0000;              // That is the first vertex in that cell.
       }
-      if (index_code & 0b010) {       // Want Y-axis
-        axes &= 0b0010;                     // Add 1 for X-axis if present
+      if (index_code & 0b010) {     // Vertex is on y-axis
+        axes &= 0b0010;             // If cell has a vertex on the x-axis, that comes before the one on the y-axis.
       }
-      if (index_code & 0b100) {       // Want Z-axis
-        axes &= 0b0110;                     // Add 1 for X and Y-axes if present
-      }                                     // Else X-axis and we need no adjustment
+      if (index_code & 0b100) {     // Vertex is on z-axis
+        axes &= 0b0110;             // If cell has vertices on either the x or y axes, those come before the one on the z-axis.
+      }
       uint32_t n;
       asm("popc.b32 %0, %1;": "=r"(n) : "r"(axes));
       vertex_index += n;
@@ -714,6 +701,8 @@ namespace {
     if (threadIdx.x == 0) {
       if (indexed) {
         uint32_t vertex_count_clamped = min(vertex_capacity, vertex_pyramid[8].x);
+        // FIXME: Try to merge these two kernels as they are independent and can run on the
+        //        same time.
         if (vertex_count_clamped) {
           extractIndexedVertexPN<<<(vertex_count_clamped + 255) / 256, 256>>>(vertex_output,
                                                                               vertex_pyramid,
@@ -945,7 +934,8 @@ void ComputeStuff::MC::buildPN(Context* ctx,
   if (buildPyramid) {
     // Indexed pyramid buildup
     if (ctx->indexed) {
-
+      // FIXME: Try to add extra reduction passes on the tail of this kernel (2 or 3 levels in one go
+      //        have worked well before) and see if that reduces memory pressure.
       ::reduceBaseIndexed<float> << <ctx->chunk_total, 32, 0, stream >> > (ctx->index_cases_d,                   // block writes 5*5*32=800 uint8's
                                                                            ctx->vertex_pyramid + ctx->level_offsets[0], // block writes 5*32 uvec4's
                                                                            ctx->vertex_sidebands[0],                    // block writes 5*32 uint32's
@@ -961,6 +951,9 @@ void ComputeStuff::MC::buildPN(Context* ctx,
                                                                            make_uint3(ctx->grid_size.x - 1,
                                                                                       ctx->grid_size.y - 1,
                                                                                       ctx->grid_size.z - 1));
+      // FIXME: Try to run the vertex pyramid in a separate stream. Sync may be too costly though, and in that
+      //        case it might be better to just merge the two launches and use e.g. block.y to tell which
+      //        pyramid to reduce.
       bool sb = true;
       for (unsigned i = 1; i < ctx->levels - 3; i++) {
         const auto blocks = (ctx->level_sizes[i] + 31) / 32;
@@ -969,6 +962,7 @@ void ComputeStuff::MC::buildPN(Context* ctx,
                                                     ctx->level_sizes[i],                           // Number of uvec4's in level i
                                                     ctx->index_sidebands[sb ? 0 : 1],              // Input, each block will read 5*32=160 values from here
                                                     ctx->level_sizes[i - 1]);                      // Number of sideband elements from level i-1
+        // FIXME: Try to combine these two kernels into one, as they are independent.
         reduce1 << <blocks, 5 * 32, 0, stream >> > (ctx->vertex_pyramid + ctx->level_offsets[i], // Each block will write 32 uvec4's into this
                                                     ctx->vertex_sidebands[sb ? 1 : 0],           // Each block will write 32 uint32's into this
                                                     ctx->level_sizes[i],                         // Number of uvec4's in level i
@@ -980,6 +974,7 @@ void ComputeStuff::MC::buildPN(Context* ctx,
                                                 ctx->sum_d,
                                                 ctx->index_sidebands[sb ? 0 : 1],
                                                 ctx->level_sizes[ctx->levels - 4]);
+      // FIXME: Try to combine these two kernels into one, as they are independent.
       reduceApex << <1, 4 * 32, 0, stream >> > (ctx->vertex_pyramid + 8,
                                                 ctx->sum_d + 1,
                                                 ctx->vertex_sidebands[sb ? 0 : 1],
