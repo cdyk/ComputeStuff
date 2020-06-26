@@ -28,10 +28,12 @@ namespace {
   };
 
   FieldFormat format = FieldFormat::Float;
-  uint32_t nx = 255;
-  uint32_t ny = 255;
-  uint32_t nz = 255;
+  uint32_t nx = 256;
+  uint32_t ny = 256;
+  uint32_t nz = 256;
   bool wireframe = false;
+  bool recreate_context = true;
+  bool indexed = true;
   float threshold = 0.f;
 
   std::vector<char> scalarField_host;
@@ -44,72 +46,81 @@ namespace {
   void onKey(GLFWwindow* window, int key, int scancode, int action, int mods)
   {
     bool print_threshold = false;
-    if (key == GLFW_KEY_W && action == GLFW_PRESS) {
-      wireframe = !wireframe;
-      fprintf(stderr, "Wireframe: %s\n", wireframe ? "on" : "off");
+    if (action == GLFW_PRESS) {
+      if (key == GLFW_KEY_W) {
+        wireframe = !wireframe;
+        fprintf(stderr, "Wireframe: %s\n", wireframe ? "on" : "off");
+      }
+      else if (key == GLFW_KEY_UP) {
+        threshold += 10.f; print_threshold = true;
+      }
+      else if (key == GLFW_KEY_DOWN) {
+        threshold -= 10.f; print_threshold = true;
+      }
+      else if (key == GLFW_KEY_RIGHT) {
+        threshold += 0.01f; print_threshold = true;
+      }
+      else if (key == GLFW_KEY_LEFT) {
+        threshold -= 0.01f; print_threshold = true;
+      }
+      else if (key == GLFW_KEY_BACKSPACE) {
+        threshold = 0.f; print_threshold = true;
+      }
+      else if (key == GLFW_KEY_I) {
+        indexed = !indexed;
+        recreate_context = true;
+        fprintf(stderr, "Mode is %s", indexed ? "indexed" : "non-indexed");
+      }
+      if (print_threshold) {
+        fprintf(stderr, "Iso-value: %f\n", threshold);
+      }
     }
-    else if (key == GLFW_KEY_UP) {
-      threshold += 10.f; print_threshold = true;
-    }
-    else if (key == GLFW_KEY_DOWN) {
-      threshold -= 10.f; print_threshold = true;
-    }
-    else if (key == GLFW_KEY_RIGHT) {
-      threshold += 0.01f; print_threshold = true;
-    }
-    else if (key == GLFW_KEY_LEFT) {
-      threshold -= 0.01f; print_threshold = true;
-    }
-    else if (key == GLFW_KEY_BACKSPACE) {
-      threshold = 0.f; print_threshold = true;
-    }
-
-    if (print_threshold) {
-      fprintf(stderr, "Iso-value: %f\n", threshold);
-    }
-
-
   }
 
 
   const std::string simpleVS_src = R"(#version 430
-
 in layout(location=0) vec3 inPosition;
 in layout(location=1) vec3 inNormal;
-
 out vec3 normal;
-
 uniform layout(location=0) mat4 MV;
 uniform layout(location=1) mat4 MVP;
-
 void main() {
   normal = mat3(MV)*inNormal;
   gl_Position = MVP * vec4(inPosition, 1);
-  //gl_Position = vec4(inPosition, 1);
 }
 )";
 
   const std::string simpleFS_src = R"(#version 430
-
 in vec3 normal;
-
 out layout(location=0) vec4 outColor;
 uniform layout(location=2) vec4 color;
-uniform layout(location=3) uint shade;
-
 void main() {
- 
-  float d = max(0.0, dot(vec3(0,0,1), gl_FrontFacing ? -normal : normal));
-
+  float d = max(0.0, dot(vec3(0,0,1), normalize(gl_FrontFacing ? -normal : normal)));
   if(gl_FrontFacing)
     outColor = d * color.rgba;
   else
     outColor = color.bgra;
-  //outColor = vec4(abs(normal), 1);
-  //outColor = vec4(1,0,0,1);
+}
+)";
+
+  const std::string solidVS_src = R"(#version 430
+in layout(location=0) vec3 inPosition;
+uniform layout(location=0) mat4 MV;
+uniform layout(location=1) mat4 MVP;
+void main() {
+  gl_Position = MVP * vec4(inPosition, 1);
+}
+)";
+
+  const std::string solidFS_src = R"(#version 430
+out layout(location=0) vec4 outColor;
+uniform layout(location=2) vec4 color;
+void main() {
+  outColor = color.rgba;
 }
 
 )";
+
 
   [[noreturn]]
   void handleOpenGLError(GLenum error, const std::string file, int line)
@@ -279,6 +290,24 @@ void main() {
     float v = 1.f - 16.f * x * y * z - 4.f * (x * x + y * y + z * z);
     return v;
   }
+
+  GLfloat wireBoxVertexData[] =
+  {
+    0.f, 0.f, 0.f,  1.f, 0.f, 0.f,
+    0.f, 0.f, 1.f,  1.f, 0.f, 1.f,
+    0.f, 1.f, 0.f,  1.f, 1.f, 0.f,
+    0.f, 1.f, 1.f,  1.f, 1.f, 1.f,
+
+    0.f, 0.f, 0.f,  0.f, 1.f, 0.f,
+    0.f, 0.f, 1.f,  0.f, 1.f, 1.f,
+    1.f, 0.f, 0.f,  1.f, 1.f, 0.f,
+    1.f, 0.f, 1.f,  1.f, 1.f, 1.f,
+
+    0.f, 0.f, 0.f,  0.f, 0.f, 1.f,
+    0.f, 1.f, 0.f,  0.f, 1.f, 1.f,
+    1.f, 0.f, 0.f,  1.f, 0.f, 1.f,
+    1.f, 1.f, 0.f,  1.f, 1.f, 1.f
+  };
 
   void buildCayleyField()
   {
@@ -528,8 +557,6 @@ int main(int argc, char** argv)
 
 
   auto* tables = createTables(stream);
-  auto* ctx = createContext(tables, make_uint3(nx-1, ny-1, nz-1), stream);
-    
 
   GLuint simpleVS = createShader(simpleVS_src, GL_VERTEX_SHADER);
   assert(simpleVS != 0);
@@ -540,6 +567,27 @@ int main(int argc, char** argv)
   GLuint simplePrg = createProgram(simpleVS, simpleFS);
   assert(simplePrg != 0);
 
+  GLuint solidVS = createShader(solidVS_src, GL_VERTEX_SHADER);
+  assert(solidVS != 0);
+
+  GLuint solidFS = createShader(solidFS_src, GL_FRAGMENT_SHADER);
+  assert(solidFS != 0);
+
+  GLuint solidPrg = createProgram(solidVS, solidFS);
+  assert(solidPrg != 0);
+
+
+  //GLuint vdatabuf = createBuffer(GL_ARRAY_BUFFER, GL_STATIC_DRAW, sizeof(vertexData), (const void*)vertexData);
+  GLuint wireBoxVertexBuffer = createBuffer(GL_ARRAY_BUFFER, GL_STATIC_DRAW, sizeof(wireBoxVertexData),  wireBoxVertexData);
+  uint32_t wireBoxVertexCount = sizeof(wireBoxVertexData) / (3 * sizeof(float));
+
+  GLuint wireBoxVbo = 0;
+  glGenVertexArrays(1, &wireBoxVbo);
+  glBindVertexArray(wireBoxVbo);
+  glBindBuffer(GL_ARRAY_BUFFER, wireBoxVertexBuffer);
+  glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(float) * 3, nullptr);
+  glEnableVertexAttribArray(0);
+
   unsigned eventCounter = 0;
   cudaEvent_t events[2 * 4];
   for (size_t i = 0; i < 2 * 4; i++) {
@@ -547,14 +595,18 @@ int main(int argc, char** argv)
     CHECKED_CUDA(cudaEventRecord(events[i], stream));
   }
 
-  GLuint cudaBuf = createBuffer(GL_ARRAY_BUFFER, GL_STREAM_DRAW, 3 * sizeof(float), nullptr);
-  cudaGraphicsResource* bufferResource = nullptr;
-  CHECKED_CUDA(cudaGraphicsGLRegisterBuffer(&bufferResource, cudaBuf, cudaGraphicsRegisterFlagsWriteDiscard));
+  GLuint cudaVertexBuf = createBuffer(GL_ARRAY_BUFFER, GL_STREAM_DRAW, 3 * sizeof(float), nullptr);
+  cudaGraphicsResource* vertexBufferResource = nullptr;
+  CHECKED_CUDA(cudaGraphicsGLRegisterBuffer(&vertexBufferResource, cudaVertexBuf, cudaGraphicsRegisterFlagsWriteDiscard));
+
+  GLuint cudaIndexBuf = createBuffer(GL_ELEMENT_ARRAY_BUFFER, GL_STREAM_DRAW, 3 * sizeof(uint32_t), nullptr);
+  cudaGraphicsResource* indexBufferResource = nullptr;
+  CHECKED_CUDA(cudaGraphicsGLRegisterBuffer(&indexBufferResource, cudaIndexBuf, cudaGraphicsRegisterFlagsWriteDiscard));
 
   GLuint cudaVbo = 0;
   glGenVertexArrays(1, &cudaVbo);
   glBindVertexArray(cudaVbo);
-  glBindBuffer(GL_ARRAY_BUFFER, cudaBuf);
+  glBindBuffer(GL_ARRAY_BUFFER, cudaVertexBuf);
   glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(float) * 6, nullptr);
   glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(float) * 6, (void*)(sizeof(float) * 3));
   glEnableVertexAttribArray(0);
@@ -565,6 +617,8 @@ int main(int argc, char** argv)
   auto timer = std::chrono::high_resolution_clock::now();
   float cuda_ms = 0.f;
   unsigned frames = 0;
+
+  ComputeStuff::MC::Context* ctx = nullptr;
   while (!glfwWindowShouldClose(win)) {
     int width, height;
     glfwGetWindowSize(win, &width, &height);
@@ -572,15 +626,31 @@ int main(int argc, char** argv)
     uint32_t vertex_count = 0;
     uint32_t index_count = 0;
     {
-      void* cudaBuf_d = nullptr;
-      size_t cudaBuf_size = 0;
+      if (ctx == nullptr || recreate_context) {
+        freeContext(ctx, stream);
+        ctx = createContext(tables, make_uint3(nx, ny, nz), indexed, stream);
+        recreate_context = false;
+      }
 
-      CHECKED_CUDA(cudaGraphicsMapResources(1, &bufferResource, stream));
-      CHECKED_CUDA(cudaGraphicsResourceGetMappedPointer(&cudaBuf_d, &cudaBuf_size, bufferResource));
+      float* cudaVertexBuf_d = nullptr;
+      size_t cudaVertexBuf_size = 0;
+
+      uint32_t* cudaIndexBuf_d = nullptr;
+      size_t cudaIndexBuf_size = 0;
+
+      CHECKED_CUDA(cudaGraphicsMapResources(1, &vertexBufferResource, stream));
+      CHECKED_CUDA(cudaGraphicsResourceGetMappedPointer((void**)&cudaVertexBuf_d, &cudaVertexBuf_size, vertexBufferResource));
+      if (indexed) {
+        CHECKED_CUDA(cudaGraphicsMapResources(1, &indexBufferResource, stream));
+        CHECKED_CUDA(cudaGraphicsResourceGetMappedPointer((void**)&cudaIndexBuf_d, &cudaIndexBuf_size, indexBufferResource));
+      }
+
       CHECKED_CUDA(cudaEventRecord(events[2 * eventCounter + 0], stream));
       ComputeStuff::MC::buildPN(ctx,
-                                cudaBuf_d,
-                                cudaBuf_size,
+                                cudaVertexBuf_d,
+                                cudaIndexBuf_d,
+                                cudaVertexBuf_size,
+                                cudaIndexBuf_size,
                                 nx,
                                 nx* ny,
                                 make_uint3(0, 0, 0),
@@ -589,33 +659,59 @@ int main(int argc, char** argv)
                                 threshold,
                                 stream,
                                 true,
-                                false);
+                                true);
       CHECKED_CUDA(cudaEventRecord(events[2 * eventCounter + 1], stream));
-      CHECKED_CUDA(cudaGraphicsUnmapResources(1, &bufferResource, stream));
-      ComputeStuff::MC::getCounts(ctx, &vertex_count, &index_count, stream);
+      CHECKED_CUDA(cudaGraphicsUnmapResources(1, &vertexBufferResource, stream));
+      if (indexed) {
+        CHECKED_CUDA(cudaGraphicsUnmapResources(1, &indexBufferResource, stream));
+      }
 
+      ComputeStuff::MC::getCounts(ctx, &vertex_count, &index_count, stream);
+      
       eventCounter = (eventCounter + 1) & 3;
       float ms = 0;
       CHECKED_CUDA(cudaEventElapsedTime(&ms, events[2 * eventCounter + 0], events[2 * eventCounter + 1]));
       cuda_ms += ms;
 
-      if (cudaBuf_size < 6 * sizeof(float) * vertex_count) {
+      bool vertexBufTooSmall = cudaVertexBuf_size < 6 * sizeof(float) * vertex_count;
+      bool indexBufTooSmall = cudaIndexBuf_size < sizeof(uint32_t)* index_count;
 
-        CHECKED_CUDA(cudaGraphicsUnregisterResource(bufferResource));
+      if (vertexBufTooSmall || indexBufTooSmall) {
 
-        size_t newSize = 6 * sizeof(float) * (static_cast<size_t>(vertex_count) + vertex_count / 16);
-        fprintf(stderr, "Resizing VBO to %zu bytes\n", newSize);
-        glBindBuffer(GL_ARRAY_BUFFER, cudaBuf);
-        glBufferData(GL_ARRAY_BUFFER, newSize, nullptr, GL_STREAM_DRAW);
-        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        CHECKED_CUDA(cudaGraphicsUnregisterResource(vertexBufferResource));
+        CHECKED_CUDA(cudaGraphicsUnregisterResource(indexBufferResource));
 
-        CHECKED_CUDA(cudaGraphicsGLRegisterBuffer(&bufferResource, cudaBuf, cudaGraphicsRegisterFlagsWriteDiscard));
+        if (vertexBufTooSmall) {
+          size_t newVertexBufSize = 6 * sizeof(float) * (static_cast<size_t>(vertex_count) + vertex_count / 16);
+          glBindBuffer(GL_ARRAY_BUFFER, cudaVertexBuf);
+          glBufferData(GL_ARRAY_BUFFER, newVertexBufSize, nullptr, GL_STREAM_DRAW);
+          glBindBuffer(GL_ARRAY_BUFFER, 0);
+          fprintf(stderr, "Resizing: vbuf=%zub\n", newVertexBufSize);
+        }
 
-        CHECKED_CUDA(cudaGraphicsMapResources(1, &bufferResource, stream));
-        CHECKED_CUDA(cudaGraphicsResourceGetMappedPointer(&cudaBuf_d, &cudaBuf_size, bufferResource));
+        if (indexBufTooSmall) {
+          size_t newIndexBufSize = sizeof(uint32_t) * (index_count + index_count / 16);
+          glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, cudaIndexBuf);
+          glBufferData(GL_ELEMENT_ARRAY_BUFFER, newIndexBufSize, nullptr, GL_STREAM_DRAW);
+          glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+          fprintf(stderr, "Resizing: ibuf=%zub\n", newIndexBufSize);
+        }
+
+        CHECKED_CUDA(cudaGraphicsGLRegisterBuffer(&vertexBufferResource, cudaVertexBuf, cudaGraphicsRegisterFlagsWriteDiscard));
+        CHECKED_CUDA(cudaGraphicsGLRegisterBuffer(&indexBufferResource, cudaIndexBuf, cudaGraphicsRegisterFlagsWriteDiscard));
+
+        CHECKED_CUDA(cudaGraphicsMapResources(1, &vertexBufferResource, stream));
+        CHECKED_CUDA(cudaGraphicsResourceGetMappedPointer((void**)&cudaVertexBuf_d, &cudaVertexBuf_size, vertexBufferResource));
+        if (indexed) {
+          CHECKED_CUDA(cudaGraphicsMapResources(1, &indexBufferResource, stream));
+          CHECKED_CUDA(cudaGraphicsResourceGetMappedPointer((void**)&cudaIndexBuf_d, &cudaIndexBuf_size, indexBufferResource));
+        }
+        fprintf(stderr, "%zu\n", cudaIndexBuf_size);
         ComputeStuff::MC::buildPN(ctx,
-                                  cudaBuf_d,
-                                  cudaBuf_size,
+                                  cudaVertexBuf_d,
+                                  cudaIndexBuf_d,
+                                  cudaVertexBuf_size,
+                                  cudaIndexBuf_size,
                                   nx,
                                   nx*ny,
                                   make_uint3(0, 0, 0),
@@ -624,8 +720,11 @@ int main(int argc, char** argv)
                                   threshold,
                                   stream,
                                   false,
-                                  true);
-        CHECKED_CUDA(cudaGraphicsUnmapResources(1, &bufferResource, stream));
+                                  indexed);
+        CHECKED_CUDA(cudaGraphicsUnmapResources(1, &vertexBufferResource, stream));
+        if (indexed) {
+          CHECKED_CUDA(cudaGraphicsUnmapResources(1, &indexBufferResource, stream));
+        }
       }
     }
     glViewport(0, 0, width, height);
@@ -639,13 +738,13 @@ int main(int argc, char** argv)
     translateMatrix(center, -0.5f, -0.5f, -0.5f);
 
     float rx[16];
-    rotMatrixX(rx, static_cast<float>(1.1 * seconds));
+    rotMatrixX(rx, static_cast<float>(0.3 * seconds));
 
     float ry[16];
-    rotMatrixY(ry, static_cast<float>(1.7 * seconds));
+    rotMatrixY(ry, static_cast<float>(0.7 * seconds));
 
     float rz[16];
-    rotMatrixZ(rz, static_cast<float>(1.3 * seconds));
+    rotMatrixZ(rz, static_cast<float>(0.5 * seconds));
 
     float shift[16];
     translateMatrix(shift, 0.f, 0.f, -2.0f);
@@ -669,27 +768,51 @@ int main(int argc, char** argv)
     matrixMul4(frustum_shift_rz_ry_rx, frustum, shift_rz_ry_rx);
 
     glEnable(GL_DEPTH_TEST);
-    glUseProgram(simplePrg);
+    glPolygonOffset(0.f, 1.f);
+    if (wireframe) {
+      glEnable(GL_POLYGON_OFFSET_FILL);
+    }
     glBindVertexArray(cudaVbo);
+    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    glUseProgram(simplePrg);
     glUniformMatrix4fv(0, 1, GL_FALSE, rz_ry_rx);
     glUniformMatrix4fv(1, 1, GL_FALSE, frustum_shift_rz_ry_rx);
-
-
-    glPolygonOffset(0.f, 1.f);
-    glEnable(GL_POLYGON_OFFSET_FILL);
-
     glUniform4f(2, 0.6f, 0.6f, 0.8f, 1.f);
-    glUniform1i(3, 1);
-    glDrawArrays(GL_TRIANGLES, 0, vertex_count);
+    if (indexed) {
+      glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, cudaIndexBuf);
+      glDrawElements(GL_TRIANGLES, index_count, GL_UNSIGNED_INT, nullptr);
+    }
+    else {
+      glDrawArrays(GL_TRIANGLES, 0, vertex_count);
+    }
     glDisable(GL_POLYGON_OFFSET_FILL);
 
+
     if (wireframe) {
+      glUseProgram(solidPrg);
       glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-      glUniform1i(3, 0);
+      glUniformMatrix4fv(0, 1, GL_FALSE, rz_ry_rx);
+      glUniformMatrix4fv(1, 1, GL_FALSE, frustum_shift_rz_ry_rx);
       glUniform4f(2, 1.f, 1.f, 1.f, 1.f);
-      glDrawArrays(GL_TRIANGLES, 0, vertex_count);
+      if (indexed) {
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, cudaIndexBuf);
+        glDrawElements(GL_TRIANGLES, index_count, GL_UNSIGNED_INT, nullptr);
+      }
+      else {
+        glDrawArrays(GL_TRIANGLES, 0, vertex_count);
+      }
       glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
     }
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+
+    glBindVertexArray(wireBoxVbo);
+    glUseProgram(solidPrg);
+    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+    glUniformMatrix4fv(0, 1, GL_FALSE, rz_ry_rx);
+    glUniformMatrix4fv(1, 1, GL_FALSE, frustum_shift_rz_ry_rx);
+    glUniform4f(2, 1.f, 1.f, 1.f, 1.f);
+    glDrawArrays(GL_LINES, 0, wireBoxVertexCount);
 
     glfwSwapBuffers(win);
     glfwPollEvents();
@@ -699,11 +822,18 @@ int main(int argc, char** argv)
       auto now = std::chrono::high_resolution_clock::now();
       std::chrono::duration<double> elapsed = now - timer;
       auto s = elapsed.count();
-      if (10 < frames && 3.0 < s) {
-        fprintf(stderr, "%.2f FPS (%.2f MVPS) cuda avg: %.2fms (%.2f MVPS) %ux%ux%u\n",
+      if (10 < frames && 0.5 < s) {
+        size_t free, total;
+        CHECKED_CUDA(cudaMemGetInfo(&free, &total));
+        fprintf(stderr, "%.2f FPS (%.2f MVPS) cuda avg: %.2fms (%.2f MVPS) %ux%ux%u Nv=%u Ni=%u ix=%s memfree=%zumb/%zumb\n",
                 frames / s, (float(frames)* nx *ny * nz) / (1000000.f * s),
                 cuda_ms/frames, (float(frames)* nx* ny* nz) / (1000.f * cuda_ms),
-                nx, ny, nz);
+                nx, ny, nz,
+                vertex_count,
+                index_count,
+                indexed ? "y" : "n",
+                (free + 1024 * 1024 - 1) / (1024 * 1024),
+                (total + 1024 * 1024 - 1) / (1024 * 1024));
         timer = now;
         frames = 0;
         cuda_ms = 0.f;

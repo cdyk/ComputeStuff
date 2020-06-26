@@ -124,12 +124,13 @@ ComputeStuff::Scan::exclusiveScan(inout_d, scratch_d, inout_d, N);
 
 ## HP5 Marching cubes
 
-This code-base includes a re-implementation of [GPU Accelerated Data Expansion Marching Cubes Algorithm](http://on-demand.gputechconf.com/gtc/2010/presentations/S12020-GPU-Accelerated-Data-Expansion-Marching-Cubes-Algorithm.pdf) from GTC 2010.
+This code-base includes an implementation of [GPU Accelerated Data Expansion Marching Cubes Algorithm](http://on-demand.gputechconf.com/gtc/2010/presentations/S12020-GPU-Accelerated-Data-Expansion-Marching-Cubes-Algorithm.pdf) from GTC 2010, which produces non-indexed meshes.
 
-The code is **work-in-progress** and is not fully optimized (in particular, it lacks fusion of reduction steps, and the HP5 traversal needs some care). But it works.
+In addition, the code can produce indexed meshes. The approach here is to use two pyramids, one for vertices and one for indices. Generating vertices is similar to the non-indexed case, except that each cell can only emit maximally 3 vertices, and not 15. Generating indices includes some new ideas, where we first do a down-traversal to find find the generating cell, and then jump to the neighbouring cell that owns the vertex, and do an reversed traversal to figure out the index of the vertex.
 
-Currently only un-indexed meshes are produced, a version producing indexed meshes is underway.
+Please see [MarchingCubesTest/main.cu](MarchingCubesTest/main.cu) for an small example application that runs the code. Look in the [data](data) folder for details on how to obtain suitable test data. Remember to set the threshold to e.g. 800 for those datasets, using either the command line option `-i` or the arrow keys.
 
+**Note:** The marching cubes-code is *work-in-progress*, and is currently not particularly optimized, in fact, parts are purposely not optimized to make shuffling code around easier. But the code works, and produces correct output. I obviously plan to optimize it but haven't put too much effort into it yet.
 
 ## Prefix sum / Scan
 
