@@ -7,15 +7,13 @@
 
 namespace {
 
-  struct uint5 {
-    uint32_t e0;
-    uint32_t e1;
-    uint32_t e2;
-    uint32_t e3;
-    uint32_t e4;
-  };
+  // Non-indexed baselevel
+  // ---------------------
 
-
+  // Fetch 32[x] x 5[y] samples from the scalar field. Tests only for end
+  // of memory block with field, so samples for cells outside of grid will
+  // contain garbage, but that doens't matter here as this will be masked
+  // out later.
   template<typename T>
   __device__ float2 fetch(const T* ptr, const T* end, const size_t stride, const float t, unsigned thread)
   {
@@ -26,11 +24,142 @@ namespace {
     float t4 = ((ptr < end) && (ptr[0] < t) ? 1.f : 0.f); ptr += stride;
     float t5 = ((ptr < end) && (ptr[0] < t) ? 1.f : 0.f); ptr += stride;
 
+    // Simd-in-float3, packing 6 uint8 bitsets into 2 float32.
+    // Using float units instead of integer units reduces pressure on integer
+    // uints, which are a bit pressured. Gives a slight speedup.
     float r0 = __fmaf_rn(float(1 << 16), t2, __fmaf_rn(float(1 << 8), t1, t0));
     float r1 = __fmaf_rn(float(1 << 16), t5, __fmaf_rn(float(1 << 8), t4, t3));
     return make_float2(r0, r1);
   }
 
+  // Fetch samples from scalar-field, deduce MC cases for cells, and write out
+  // first level ot the HistoPyramid and sideband.
+  //
+  // Since cells needs surrounding samples, 32 samples are fetched to produce
+  // 31 cells. This wastes 1/32 of the processing, but yields pretty coalesced
+  // fetches. Profiling shows a bit too many memory transactions, which I guess
+  // is due to fetches not being aligned (first warp fetches values 0..31, next
+  // warp fetches 31...62, etc, so requests gets split).
+  //
+  // The cell grid is decomposed into chunks of 32 x 5 x 5. The last x-value is,
+  // as mentioned, discarded, so the extent is actually 31 x 5 x 5, but the
+  // full set of values are written.
+  //
+  // I have tried (RTX2080 + CUDA 11) to just let the cache system handle this
+  // and create a full set of 32 cells, but that was slower. Also tried to add
+  // extra end-fetch for the last thread to get the missing samnple for a full
+  // set of 32 cells, but that was slower as well.
+  template<class FieldType>
+  __global__ __launch_bounds__(32) void reduceBase(uint8_t* __restrict__           index_cases_d,
+                                                   uint4* __restrict__             out_index_level0_d,
+                                                   uint32_t* __restrict__          out_index_sideband_d,
+                                                   const uint8_t* __restrict__     index_count,
+                                                   const FieldType* __restrict__   field_d,
+                                                   const FieldType* __restrict__   field_end_d,
+                                                   const size_t                    field_row_stride,
+                                                   const size_t                    field_slice_stride,
+                                                   const float                     threshold,
+                                                   const uint3                     chunks,
+                                                   const uint3                     cells)
+  {
+    const uint32_t warp = threadIdx.x / 32;
+    const uint32_t thread = threadIdx.x % 32;
+    const uint32_t chunk_ix = blockIdx.x + warp;
+
+    // Figure out which chunk we are in.
+    // FIXME: Try to use grid extents to mach chunk grid to avoid all these modulo/divisions.
+    uint3 chunk = make_uint3(chunk_ix % chunks.x,
+                             (chunk_ix / chunks.x) % chunks.y,
+                             (chunk_ix / chunks.x) / chunks.y);
+    uint3 cell = make_uint3(31 * chunk.x + thread,
+                            5 * chunk.y,
+                            5 * chunk.z);
+
+    // One warp processes a 32 * 5 * 5 chunk, outputs 800 mc cases to base level and 800/5=160 sums to sideband.
+    const FieldType* ptr = field_d
+      + cell.z * field_slice_stride
+      + cell.y * field_row_stride
+      + cell.x;
+
+    bool xmask = cell.x < cells.x;
+
+    // First fetch initial z-slice, and then fetch 5 additional slices, to
+    // produce 5 slices of cells.
+    float2 prev = fetch(ptr, field_end_d, field_row_stride, threshold, thread);
+    ptr += field_slice_stride;
+    for (unsigned z = 0; z < 5; z++) {
+      unsigned isum = 0;
+      bool zmask = cell.z < cells.z;
+      if (zmask) {
+        float2 next = fetch(ptr, field_end_d, field_row_stride, threshold, thread);
+        ptr += field_slice_stride;
+
+        // Merge bits from previous and current slice.
+        float2 t0 = make_float2(__fmaf_rn(float(1 << 4), next.x, prev.x),
+                                __fmaf_rn(float(1 << 4), next.y, prev.y));
+        prev = next;
+
+        // Fetch case from x+1 using warp-shuffle. Last thread has garbage data,
+        // but that result is masked out.
+        float2 tt = make_float2(__shfl_down_sync(0xffffffff, t0.x, 1),
+                                __shfl_down_sync(0xffffffff, t0.y, 1));
+
+        if (xmask && thread < 31) {
+          // Merge in results from the warp shuffle. 
+          uint32_t g0 = static_cast<uint32_t>(__fmaf_rn(2.f, tt.x, t0.x));
+          uint32_t g1 = static_cast<uint32_t>(__fmaf_rn(2.f, tt.y, t0.y));
+
+          // Fetch y+1 cases and merge along Y
+          uint32_t s0 = __byte_perm(g0, g1, (4 << 12) | (2 << 8) | (1 << 4) | (0 << 0));
+          g0 = g0 | (s0 >> 6);
+          g1 = g1 | (g1 >> 6);
+
+          // Extract cases for the 5-element y-column of cases that each thread has
+          uint8_t case_y0 = __byte_perm(g0, 0, (4 << 12) | (4 << 8) | (4 << 4) | (0 << 0));
+          uint8_t case_y1 = __byte_perm(g0, 0, (4 << 12) | (4 << 8) | (4 << 4) | (1 << 0));
+          uint8_t case_y2 = __byte_perm(g0, 0, (4 << 12) | (4 << 8) | (4 << 4) | (2 << 0));
+          uint8_t case_y3 = __byte_perm(g1, 0, (4 << 12) | (4 << 8) | (4 << 4) | (0 << 0));
+          uint8_t case_y4 = __byte_perm(g1, 0, (4 << 12) | (4 << 8) | (4 << 4) | (1 << 0));
+
+          // Look up vertex count. Set count for cells outside of domain to zero.
+          uint8_t count_y0 = cell.y + 0u < cells.y ? index_count[case_y0] : 0u;
+          uint8_t count_y1 = cell.y + 1u < cells.y ? index_count[case_y1] : 0u;
+          uint8_t count_y2 = cell.y + 2u < cells.y ? index_count[case_y2] : 0u;
+          uint8_t count_y3 = cell.y + 3u < cells.y ? index_count[case_y3] : 0u;
+          uint8_t count_y4 = cell.y + 4u < cells.y ? index_count[case_y4] : 0u;
+
+          // Find sum that goes to sideband. If this is zero, there is no
+          // geometry produced in this cell, and the HP baselevel nor the
+          // array of MC cases will be touched, so no point in storing it
+          // This gives an significant speedup.
+          isum = count_y0 + count_y1 + count_y2 + count_y3 + count_y4;
+          if (isum) {
+            // MC cases and HP base level is only visited if sum is nonzero
+            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * z + thread) + 0] = case_y0;
+            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * z + thread) + 1] = case_y1;
+            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * z + thread) + 2] = case_y2;
+            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * z + thread) + 3] = case_y3;
+            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * z + thread) + 4] = case_y4;
+            out_index_level0_d[32 * 5 * blockIdx.x + 32 * z + thread] = make_uint4(count_y0,
+                                                                                   count_y0 + count_y1,
+                                                                                   count_y0 + count_y1 + count_y2,
+                                                                                   count_y0 + count_y1 + count_y2 + count_y3);
+          }
+        }
+      }
+      cell.z++;
+      // Store sideband data.
+      out_index_sideband_d[32 * (5 * blockIdx.x + z) + threadIdx.x] = isum;
+    }
+  }
+
+  // Indexed baselevel.
+  // ------------------                                                   
+
+  // Fetch 32[x] x 5[y] samples from the scalar field, used for the indexed
+  // baselevel buildup. A bit more care testing for valid Y so samples outside
+  // will have a GL_CLAMP-ish behaviour, which we rely on to not produce
+  // edge intersections (which produces vertices) outside of the domiain. 
   template<typename T>
   __device__ float2 fetch2(const T* ptr, const size_t stride, const uint32_t y, const uint32_t max_y, const float t)
   {
@@ -41,12 +170,18 @@ namespace {
     float t4 = (ptr[0] < t) ? 1.f : 0.f; ptr += (y + 5 <= max_y) ? stride : 0;
     float t5 = (ptr[0] < t) ? 1.f : 0.f;
 
+    // Simd-in-float3, packing 6 uint8 bitsets into 2 float32.
     float r0 = __fmaf_rn(float(1 << 16), t2, __fmaf_rn(float(1 << 8), t1, t0));
     float r1 = __fmaf_rn(float(1 << 16), t5, __fmaf_rn(float(1 << 8), t4, t3));
     return make_float2(r0, r1);
   }
 
-
+  // Given a MC case (8-bits), create a mask for the (0,0,0)-(1,0,0), (0,0,0)-(0,1,0),
+  // and (0,0,0)-(0,0,1) axes where a bit is set if the bits of the edge end-points in
+  // the MC case are different (and thus edge pierces the iso-surface).
+  //
+  // This apporachs works by broadcasting the bit of (0,0,0) to all bits, and xor this
+  // with the case, and mask out the relevant bits.
   __device__ __forceinline__ uint32_t piercingAxesFromCase(uint32_t c)
   {
     uint32_t a;
@@ -60,6 +195,8 @@ namespace {
     return a;
   }
 
+  // Count the number of edge-intersections of edges belonging to that cell (0-3).
+  // We just count the number of set bits in a bitmask.
   __device__ __forceinline__ uint32_t axisCountFromCase(const uint32_t c)
   {
     uint32_t a = piercingAxesFromCase(c);
@@ -68,6 +205,18 @@ namespace {
     return n;
   }
 
+  // Fetch samples from scalar-field, deduce MC cases for cells, and write out
+  // first level ot the HistoPyramid and sideband.
+  //
+  // See comments for reduceBase
+  //
+  // In addition to calculating the MC cell case, it also calculates the number
+  // of unique vertices belong to that cell (0-3). This grid is one cell-layer
+  // larger along X,Y and Z than the unindexed grid to have the simple relation-
+  // ship of each cell having 0-3 vertices.
+  //
+  // But this requires careful masking to avoid producing extra vertices, we
+  // basically implement GL_CLAMP-behavior.
   template<class FieldType>
   __global__ __launch_bounds__(32) void reduceBaseIndexed(uint8_t* __restrict__           index_cases_d,
                                                           uint4* __restrict__             out_vertex_level0_d,
@@ -87,6 +236,8 @@ namespace {
     const uint32_t thread = threadIdx.x % 32;
     const uint32_t chunk_ix = blockIdx.x + warp;
 
+    // Figure out which chunk we are in.
+    // FIXME: Try to use grid extents to mach chunk grid to avoid all these modulo/divisions.
     uint3 chunk = make_uint3(chunk_ix % chunks.x,
                              (chunk_ix / chunks.x) % chunks.y,
                              (chunk_ix / chunks.x) / chunks.y);
@@ -96,12 +247,14 @@ namespace {
 
     // One warp processes a 31 * 5 * 5 chunk, outputs 800 mc cases to base level and 800/5=160 sums to sideband.
     const FieldType* ptr = field_d
-                         + cell.z * field_slice_stride
-                         + cell.y * field_row_stride
-                         + min(grid_max_index.x, cell.x);
+      + cell.z * field_slice_stride
+      + cell.y * field_row_stride
+      + min(grid_max_index.x, cell.x);
+
+    // First fetch initial z-slice, and then fetch 5 additional slices, to
+    // produce 5 slices of cells.
     float2 prev = fetch2(ptr, field_row_stride, cell.y, grid_max_index.y, threshold);
     ptr += cell.z < grid_max_index.z ? field_slice_stride : 0;
-
     for (unsigned z = 0; z < 5; z++) {
 
       unsigned isum = 0;
@@ -111,33 +264,40 @@ namespace {
         float2 next = fetch2(ptr, field_row_stride, cell.y, grid_max_index.y, threshold);
         ptr += cell.z + 1 < grid_max_index.z ? field_slice_stride : 0;
 
+        // Merge bits from previous and current slice.
         float2 t0 = make_float2(__fmaf_rn(float(1 << 4), next.x, prev.x),
                                 __fmaf_rn(float(1 << 4), next.y, prev.y));
 
         prev = next;
 
+        // Fetch case from x+1 using warp-shuffle. Last thread has garbage data,
+        // but that result is masked out.
         float2 tt = make_float2(__shfl_down_sync(0xffffffff, t0.x, 1),
                                 __shfl_down_sync(0xffffffff, t0.y, 1));
 
         if (cell.x <= grid_max_index.x && thread < 31) {
+          // Merge in results from the warp shuffle. 
           uint32_t g0 = static_cast<uint32_t>(__fmaf_rn(2.f, tt.x, t0.x));
           uint32_t g1 = static_cast<uint32_t>(__fmaf_rn(2.f, tt.y, t0.y));
           uint32_t s0 = __byte_perm(g0, g1, (4 << 12) | (2 << 8) | (1 << 4) | (0 << 0));
           g0 = g0 | (s0 >> 6);
           g1 = g1 | (g1 >> 6);
 
+          // Extract cases for the 5-element y-column of cases that each thread has
           uint32_t case_y0 = __byte_perm(g0, 0, (4 << 12) | (4 << 8) | (4 << 4) | (0 << 0));
           uint32_t case_y1 = __byte_perm(g0, 0, (4 << 12) | (4 << 8) | (4 << 4) | (1 << 0));
           uint32_t case_y2 = __byte_perm(g0, 0, (4 << 12) | (4 << 8) | (4 << 4) | (2 << 0));
           uint32_t case_y3 = __byte_perm(g1, 0, (4 << 12) | (4 << 8) | (4 << 4) | (0 << 0));
           uint32_t case_y4 = __byte_perm(g1, 0, (4 << 12) | (4 << 8) | (4 << 4) | (1 << 0));
 
+          // Look up index count. Set count for cells outside of domain to zero. Careful masking.
           uint32_t ic_y0 = (cell.x < grid_max_index.x) && (cell.z < grid_max_index.z) && ((cell.y + 0u) < grid_max_index.y) ? index_count[case_y0] : 0u;
           uint32_t ic_y1 = (cell.x < grid_max_index.x) && (cell.z < grid_max_index.z) && ((cell.y + 1u) < grid_max_index.y) ? index_count[case_y1] : 0u;
           uint32_t ic_y2 = (cell.x < grid_max_index.x) && (cell.z < grid_max_index.z) && ((cell.y + 2u) < grid_max_index.y) ? index_count[case_y2] : 0u;
           uint32_t ic_y3 = (cell.x < grid_max_index.x) && (cell.z < grid_max_index.z) && ((cell.y + 3u) < grid_max_index.y) ? index_count[case_y3] : 0u;
           uint32_t ic_y4 = (cell.x < grid_max_index.x) && (cell.z < grid_max_index.z) && ((cell.y + 4u) < grid_max_index.y) ? index_count[case_y4] : 0u;
 
+          // Look up vertex count. Set count for cells outside of domain to zero.
           uint32_t vc_y0 = axisCountFromCase(case_y0);
           uint32_t vc_y1 = cell.y + 1 <= grid_max_index.y ? axisCountFromCase(case_y1) : 0;
           uint32_t vc_y2 = cell.y + 2 <= grid_max_index.y ? axisCountFromCase(case_y2) : 0;
@@ -146,7 +306,6 @@ namespace {
 
           vsum = vc_y0 + vc_y1 + vc_y2 + vc_y3 + vc_y4;
           isum = ic_y0 + ic_y1 + ic_y2 + ic_y3 + ic_y4;
-
           if (isum | vsum) {
             // 8-bit arithmetic should suffice here
             out_index_level0_d[32 * 5 * blockIdx.x + 32 * z + thread] = make_uint4(vc_y0,
@@ -171,106 +330,15 @@ namespace {
                                                                                     vc_y0 + vc_y1 + vc_y2 + vc_y3);
 
           }
-          
+
         }
       }
       cell.z++;
+      // Store sideband data.
       out_vertex_sideband_d[32 * (5 * blockIdx.x + z) + threadIdx.x] = vsum;
       out_index_sideband_d[32 * (5 * blockIdx.x + z) + threadIdx.x] = isum;
     }
   }
-
-  template<class FieldType>
-  __global__ __launch_bounds__(32) void reduceBase(uint8_t* __restrict__           index_cases_d,
-                                                   uint4* __restrict__             out_index_level0_d,
-                                                   uint32_t* __restrict__          out_index_sideband_d,
-                                                   const uint8_t* __restrict__     index_count,
-                                                   const FieldType* __restrict__   field_d,
-                                                   const FieldType* __restrict__   field_end_d,
-                                                   const size_t                    field_row_stride,
-                                                   const size_t                    field_slice_stride,
-                                                   const float                     threshold,
-                                                   const uint3                     chunks,
-                                                   const uint3                     cells)
-  {
-    const uint32_t warp = threadIdx.x / 32;
-    const uint32_t thread = threadIdx.x % 32;
-    const uint32_t chunk_ix = blockIdx.x + warp;
-
-    uint3 chunk = make_uint3(chunk_ix % chunks.x,
-                             (chunk_ix / chunks.x) % chunks.y,
-                             (chunk_ix / chunks.x) / chunks.y);
-    uint3 cell = make_uint3(31 * chunk.x + thread,
-                            5 * chunk.y,
-                            5 * chunk.z);
-
-    // One warp processes a 32 * 5 * 5 chunk, outputs 800 mc cases to base level and 800/5=160 sums to sideband.
-    const FieldType* ptr = field_d
-      + cell.z * field_slice_stride
-      + cell.y * field_row_stride
-      + cell.x;
-    float2 prev = fetch(ptr, field_end_d, field_row_stride, threshold, thread);
-    ptr += field_slice_stride;
-
-    bool xmask = cell.x < cells.x;
-    for (unsigned y = 0; y < 5; y++) {
-
-      unsigned isum = 0;
-      bool zmask = cell.z < cells.z;
-      if (zmask) {
-        float2 next = fetch(ptr, field_end_d, field_row_stride, threshold, thread);
-        ptr += field_slice_stride;
-
-        float2 t0 = make_float2(__fmaf_rn(float(1 << 4), next.x, prev.x),
-                                __fmaf_rn(float(1 << 4), next.y, prev.y));
-
-        prev = next;
-
-        float2 tt = make_float2(__shfl_down_sync(0xffffffff, t0.x, 1),
-                                __shfl_down_sync(0xffffffff, t0.y, 1));
-
-        if (xmask && thread < 31) {
-          uint32_t g0 = static_cast<uint32_t>(__fmaf_rn(2.f, tt.x, t0.x));
-          uint32_t g1 = static_cast<uint32_t>(__fmaf_rn(2.f, tt.y, t0.y));
-          uint32_t s0 = __byte_perm(g0, g1, (4 << 12) | (2 << 8) | (1 << 4) | (0 << 0));
-          g0 = g0 | (s0 >> 6);
-          g1 = g1 | (g1 >> 6);
-
-          uint5 cases = {
-            __byte_perm(g0, 0, (4 << 12) | (4 << 8) | (4 << 4) | (0 << 0)),
-            __byte_perm(g0, 0, (4 << 12) | (4 << 8) | (4 << 4) | (1 << 0)),
-            __byte_perm(g0, 0, (4 << 12) | (4 << 8) | (4 << 4) | (2 << 0)),
-            __byte_perm(g1, 0, (4 << 12) | (4 << 8) | (4 << 4) | (0 << 0)),
-            __byte_perm(g1, 0, (4 << 12) | (4 << 8) | (4 << 4) | (1 << 0))
-          };
-          uint5 counts{
-            cell.y + 0u < cells.y ? index_count[cases.e0] : 0u,
-            cell.y + 1u < cells.y ? index_count[cases.e1] : 0u,
-            cell.y + 2u < cells.y ? index_count[cases.e2] : 0u,
-            cell.y + 3u < cells.y ? index_count[cases.e3] : 0u,
-            cell.y + 4u < cells.y ? index_count[cases.e4] : 0u,
-          };
-
-          isum = counts.e0 + counts.e1 + counts.e2 + counts.e3 + counts.e4;
-          if (isum) {
-            // MC cases and HP base level is only visited if sum is nonzero
-            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 0] = cases.e0;
-            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 1] = cases.e1;
-            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 2] = cases.e2;
-            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 3] = cases.e3;
-            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * y + thread) + 4] = cases.e4;
-            out_index_level0_d[32 * 5 * blockIdx.x + 32 * y + thread] = make_uint4(counts.e0,
-                                                                                   counts.e0 + counts.e1,
-                                                                                   counts.e0 + counts.e1 + counts.e2,
-                                                                                   counts.e0 + counts.e1 + counts.e2 + counts.e3);
-          }
-        }
-      }
-      cell.z++;
-      out_index_sideband_d[32 * (5 * blockIdx.x + y) + threadIdx.x] = isum;
-    }
-  }
-
 
 
   // Reads 160 values, outputs HP level of 128 values, and 32 sideband values.
@@ -282,8 +350,7 @@ namespace {
   {
     const uint32_t offset0 = 5 * 32 * blockIdx.x + threadIdx.x;
 
-    // Idea, each warp reads 32 values. read instead 32/4 uint4's.
-
+    // FIXME: Test iddea, each warp reads 32 values. read instead 32/4 uint4's.
     __shared__ uint32_t sb[5 * 32];
     sb[threadIdx.x] = offset0 < n0 ? sb0_d[offset0] : 0;
     __syncthreads();
@@ -306,6 +373,7 @@ namespace {
     }
   }
 
+  // Build 3 top levels (=apex), which are tiny.
   __global__ __launch_bounds__(128) void reduceApex(uint4* __restrict__ apex_d,
                                                     uint32_t* sum_d,
                                                     const uint32_t* in_d,
@@ -573,9 +641,6 @@ namespace {
 
       uint8_t index_case = index_cases[r.offset];
       uint8_t index_code = index_table[16u * index_case + r.remainder];
-
-      uint8_t q0 = index_code & 0b111;
-      assert(q0 == 0b100 || q0 == 0b010 || q0 == 0b001);
 
       // Find position within chunk
       uint32_t t1 = r.offset % 800;
@@ -852,9 +917,14 @@ ComputeStuff::MC::Context* ComputeStuff::MC::createContext(const Tables* tables,
   CHECKED_CUDA(cudaMemsetAsync(ctx->index_sidebands[0], 1, sideband0_size, stream));
   CHECKED_CUDA(cudaMemsetAsync(ctx->index_sidebands[1], 1, sideband1_size, stream));
 
-  CHECKED_CUDA(cudaMemcpy(ctx->index_pyramid, ctx->level_offsets, sizeof(Context::level_offsets), cudaMemcpyHostToDevice));
+
+  CHECKED_CUDA(cudaMemcpyAsync(ctx->index_pyramid, ctx->level_offsets, sizeof(Context::level_offsets), cudaMemcpyHostToDevice, stream));
 
   if (indexed) {
+    CHECKED_CUDA(cudaStreamCreateWithFlags(&ctx->indexStream, cudaStreamNonBlocking));
+    CHECKED_CUDA(cudaEventCreateWithFlags(&ctx->baseEvent, cudaEventDisableTiming));
+    CHECKED_CUDA(cudaEventCreateWithFlags(&ctx->indexDoneEvent, cudaEventDisableTiming));
+
     CHECKED_CUDA(cudaMalloc(&ctx->vertex_cases_d, sizeof(uint32_t) * 800 * ctx->chunk_total));
     CHECKED_CUDA(cudaMalloc(&ctx->vertex_pyramid, sizeof(uint4) * ctx->total_size));
     CHECKED_CUDA(cudaMalloc(&ctx->vertex_sidebands[0], sideband0_size));
@@ -864,7 +934,7 @@ ComputeStuff::MC::Context* ComputeStuff::MC::createContext(const Tables* tables,
     CHECKED_CUDA(cudaMemsetAsync(ctx->vertex_sidebands[0], 1, sideband0_size, stream));
     CHECKED_CUDA(cudaMemsetAsync(ctx->vertex_sidebands[1], 1, sideband1_size, stream));
 
-    CHECKED_CUDA(cudaMemcpy(ctx->vertex_pyramid, ctx->level_offsets, sizeof(Context::level_offsets), cudaMemcpyHostToDevice));
+    CHECKED_CUDA(cudaMemcpyAsync(ctx->vertex_pyramid, ctx->level_offsets, sizeof(Context::level_offsets), cudaMemcpyHostToDevice, stream));
   }
 
 
@@ -896,12 +966,10 @@ void ComputeStuff::MC::freeContext(Context* ctx, cudaStream_t stream)
 
   if (ctx->sum_d) { CHECKED_CUDA(cudaFreeHost(ctx->sum_d)); ctx->sum_d = nullptr; }
 
-  delete ctx;
-}
+  if (ctx->baseEvent)  CHECKED_CUDA(cudaEventDestroy(ctx->baseEvent));
+  if (ctx->indexDoneEvent) CHECKED_CUDA(cudaEventDestroy(ctx->indexDoneEvent));
+  if (ctx->indexStream) CHECKED_CUDA(cudaStreamDestroy(ctx->indexStream));
 
-
-void ComputeStuff::MC::destroyContext(Context* ctx)
-{
   delete ctx;
 }
 
@@ -951,6 +1019,10 @@ void ComputeStuff::MC::buildPN(Context* ctx,
                                                                            make_uint3(ctx->grid_size.x - 1,
                                                                                       ctx->grid_size.y - 1,
                                                                                       ctx->grid_size.z - 1));
+
+      CHECKED_CUDA(cudaEventRecord(ctx->baseEvent, stream));
+      CHECKED_CUDA(cudaStreamWaitEvent(ctx->indexStream, ctx->baseEvent, 0));
+
       // FIXME: Try to run the vertex pyramid in a separate stream. Sync may be too costly though, and in that
       //        case it might be better to just merge the two launches and use e.g. block.y to tell which
       //        pyramid to reduce.
@@ -963,7 +1035,7 @@ void ComputeStuff::MC::buildPN(Context* ctx,
                                                     ctx->index_sidebands[sb ? 0 : 1],              // Input, each block will read 5*32=160 values from here
                                                     ctx->level_sizes[i - 1]);                      // Number of sideband elements from level i-1
         // FIXME: Try to combine these two kernels into one, as they are independent.
-        reduce1 << <blocks, 5 * 32, 0, stream >> > (ctx->vertex_pyramid + ctx->level_offsets[i], // Each block will write 32 uvec4's into this
+        reduce1 << <blocks, 5 * 32, 0, ctx->indexStream >> > (ctx->vertex_pyramid + ctx->level_offsets[i], // Each block will write 32 uvec4's into this
                                                     ctx->vertex_sidebands[sb ? 1 : 0],           // Each block will write 32 uint32's into this
                                                     ctx->level_sizes[i],                         // Number of uvec4's in level i
                                                     ctx->vertex_sidebands[sb ? 0 : 1],           // Input, each block will read 5*32=160 values from here
@@ -975,10 +1047,14 @@ void ComputeStuff::MC::buildPN(Context* ctx,
                                                 ctx->index_sidebands[sb ? 0 : 1],
                                                 ctx->level_sizes[ctx->levels - 4]);
       // FIXME: Try to combine these two kernels into one, as they are independent.
-      reduceApex << <1, 4 * 32, 0, stream >> > (ctx->vertex_pyramid + 8,
+      reduceApex << <1, 4 * 32, 0, ctx->indexStream >> > (ctx->vertex_pyramid + 8,
                                                 ctx->sum_d + 1,
                                                 ctx->vertex_sidebands[sb ? 0 : 1],
                                                 ctx->level_sizes[ctx->levels - 4]);
+
+
+      CHECKED_CUDA(cudaEventRecord(ctx->indexDoneEvent, ctx->indexStream));
+      CHECKED_CUDA(cudaStreamWaitEvent(stream, ctx->indexDoneEvent, 0));
     }
 
     // Non-indexed pyramid buildup

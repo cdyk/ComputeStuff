@@ -535,7 +535,7 @@ int main(int argc, char** argv)
     return EXIT_FAILURE;
   }
   cudaSetDevice(deviceIndex);
-  CHECKED_CUDA(cudaStreamCreate(&stream));
+  CHECKED_CUDA(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
 
   // Set up scalar field
   if (!path) {
@@ -644,7 +644,6 @@ int main(int argc, char** argv)
         CHECKED_CUDA(cudaGraphicsMapResources(1, &indexBufferResource, stream));
         CHECKED_CUDA(cudaGraphicsResourceGetMappedPointer((void**)&cudaIndexBuf_d, &cudaIndexBuf_size, indexBufferResource));
       }
-
       CHECKED_CUDA(cudaEventRecord(events[2 * eventCounter + 0], stream));
       ComputeStuff::MC::buildPN(ctx,
                                 cudaVertexBuf_d,
@@ -822,7 +821,7 @@ int main(int argc, char** argv)
       auto now = std::chrono::high_resolution_clock::now();
       std::chrono::duration<double> elapsed = now - timer;
       auto s = elapsed.count();
-      if (10 < frames && 0.5 < s) {
+      if (10 < frames && 3.0 < s) {
         size_t free, total;
         CHECKED_CUDA(cudaMemGetInfo(&free, &total));
         fprintf(stderr, "%.2f FPS (%.2f MVPS) cuda avg: %.2fms (%.2f MVPS) %ux%ux%u Nv=%u Ni=%u ix=%s memfree=%zumb/%zumb\n",

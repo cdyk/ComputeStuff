@@ -39,6 +39,9 @@ namespace ComputeStuff {
       uint32_t      level_offsets[16]; // offsets in uvec4's
       uint32_t      total_size;
 
+      cudaEvent_t   baseEvent = 0;
+      cudaEvent_t   indexDoneEvent = 0;
+      cudaStream_t  indexStream = 0;
       bool          indexed = false;
     };
 
@@ -67,8 +70,6 @@ namespace ComputeStuff {
                  cudaStream_t stream,
                  bool skipPyramid,
                  bool alwaysExtract);
-
-    void destroyContext(Context* ctx);
 
   }
 }
