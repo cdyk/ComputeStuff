@@ -917,14 +917,14 @@ ComputeStuff::MC::Context* ComputeStuff::MC::createContext(const Tables* tables,
   CHECKED_CUDA(cudaMemsetAsync(ctx->index_sidebands[0], 1, sideband0_size, stream));
   CHECKED_CUDA(cudaMemsetAsync(ctx->index_sidebands[1], 1, sideband1_size, stream));
 
-  CHECKED_CUDA(cudaStreamCreateWithFlags(&ctx->indexStream, cudaStreamNonBlocking));
-
-  CHECKED_CUDA(cudaEventCreateWithFlags(&ctx->baseEvent, cudaEventDisableTiming));
-  CHECKED_CUDA(cudaEventCreateWithFlags(&ctx->indexDoneEvent, cudaEventDisableTiming));
 
   CHECKED_CUDA(cudaMemcpyAsync(ctx->index_pyramid, ctx->level_offsets, sizeof(Context::level_offsets), cudaMemcpyHostToDevice, stream));
 
   if (indexed) {
+    CHECKED_CUDA(cudaStreamCreateWithFlags(&ctx->indexStream, cudaStreamNonBlocking));
+    CHECKED_CUDA(cudaEventCreateWithFlags(&ctx->baseEvent, cudaEventDisableTiming));
+    CHECKED_CUDA(cudaEventCreateWithFlags(&ctx->indexDoneEvent, cudaEventDisableTiming));
+
     CHECKED_CUDA(cudaMalloc(&ctx->vertex_cases_d, sizeof(uint32_t) * 800 * ctx->chunk_total));
     CHECKED_CUDA(cudaMalloc(&ctx->vertex_pyramid, sizeof(uint4) * ctx->total_size));
     CHECKED_CUDA(cudaMalloc(&ctx->vertex_sidebands[0], sideband0_size));
@@ -966,12 +966,10 @@ void ComputeStuff::MC::freeContext(Context* ctx, cudaStream_t stream)
 
   if (ctx->sum_d) { CHECKED_CUDA(cudaFreeHost(ctx->sum_d)); ctx->sum_d = nullptr; }
 
-  delete ctx;
-}
+  if (ctx->baseEvent)  CHECKED_CUDA(cudaEventDestroy(ctx->baseEvent));
+  if (ctx->indexDoneEvent) CHECKED_CUDA(cudaEventDestroy(ctx->indexDoneEvent));
+  if (ctx->indexStream) CHECKED_CUDA(cudaStreamDestroy(ctx->indexStream));
 
-
-void ComputeStuff::MC::destroyContext(Context* ctx)
-{
   delete ctx;
 }
 
