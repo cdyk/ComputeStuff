@@ -918,6 +918,7 @@ ComputeStuff::MC::Context* ComputeStuff::MC::createContext(const Tables* tables,
   CHECKED_CUDA(cudaMemsetAsync(ctx->index_sidebands[1], 1, sideband1_size, stream));
 
   CHECKED_CUDA(cudaMemcpy(ctx->index_pyramid, ctx->level_offsets, sizeof(Context::level_offsets), cudaMemcpyHostToDevice));
+  CHECKED_CUDA(cudaMemcpyAsync(ctx->index_pyramid, ctx->level_offsets, sizeof(Context::level_offsets), cudaMemcpyHostToDevice, stream));
 
   if (indexed) {
     CHECKED_CUDA(cudaMalloc(&ctx->vertex_cases_d, sizeof(uint32_t) * 800 * ctx->chunk_total));
@@ -929,7 +930,7 @@ ComputeStuff::MC::Context* ComputeStuff::MC::createContext(const Tables* tables,
     CHECKED_CUDA(cudaMemsetAsync(ctx->vertex_sidebands[0], 1, sideband0_size, stream));
     CHECKED_CUDA(cudaMemsetAsync(ctx->vertex_sidebands[1], 1, sideband1_size, stream));
 
-    CHECKED_CUDA(cudaMemcpy(ctx->vertex_pyramid, ctx->level_offsets, sizeof(Context::level_offsets), cudaMemcpyHostToDevice));
+    CHECKED_CUDA(cudaMemcpyAsync(ctx->vertex_pyramid, ctx->level_offsets, sizeof(Context::level_offsets), cudaMemcpyHostToDevice, stream));
   }
 
 

@@ -535,7 +535,7 @@ int main(int argc, char** argv)
     return EXIT_FAILURE;
   }
   cudaSetDevice(deviceIndex);
-  CHECKED_CUDA(cudaStreamCreate(&stream));
+  CHECKED_CUDA(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
 
   // Set up scalar field
   if (!path) {
