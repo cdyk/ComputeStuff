@@ -39,6 +39,9 @@ namespace ComputeStuff {
       uint32_t      level_offsets[16]; // offsets in uvec4's
       uint32_t      total_size;
 
+      cudaEvent_t   baseEvent;
+      cudaEvent_t   indexDoneEvent;
+      cudaStream_t  indexStream;
       bool          indexed = false;
     };
 

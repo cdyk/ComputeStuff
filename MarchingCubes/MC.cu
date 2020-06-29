@@ -917,7 +917,11 @@ ComputeStuff::MC::Context* ComputeStuff::MC::createContext(const Tables* tables,
   CHECKED_CUDA(cudaMemsetAsync(ctx->index_sidebands[0], 1, sideband0_size, stream));
   CHECKED_CUDA(cudaMemsetAsync(ctx->index_sidebands[1], 1, sideband1_size, stream));
 
-  CHECKED_CUDA(cudaMemcpy(ctx->index_pyramid, ctx->level_offsets, sizeof(Context::level_offsets), cudaMemcpyHostToDevice));
+  CHECKED_CUDA(cudaStreamCreateWithFlags(&ctx->indexStream, cudaStreamNonBlocking));
+
+  CHECKED_CUDA(cudaEventCreateWithFlags(&ctx->baseEvent, cudaEventDisableTiming));
+  CHECKED_CUDA(cudaEventCreateWithFlags(&ctx->indexDoneEvent, cudaEventDisableTiming));
+
   CHECKED_CUDA(cudaMemcpyAsync(ctx->index_pyramid, ctx->level_offsets, sizeof(Context::level_offsets), cudaMemcpyHostToDevice, stream));
 
   if (indexed) {
@@ -1017,6 +1021,10 @@ void ComputeStuff::MC::buildPN(Context* ctx,
                                                                            make_uint3(ctx->grid_size.x - 1,
                                                                                       ctx->grid_size.y - 1,
                                                                                       ctx->grid_size.z - 1));
+
+      CHECKED_CUDA(cudaEventRecord(ctx->baseEvent, stream));
+      CHECKED_CUDA(cudaStreamWaitEvent(ctx->indexStream, ctx->baseEvent, 0));
+
       // FIXME: Try to run the vertex pyramid in a separate stream. Sync may be too costly though, and in that
       //        case it might be better to just merge the two launches and use e.g. block.y to tell which
       //        pyramid to reduce.
@@ -1029,7 +1037,7 @@ void ComputeStuff::MC::buildPN(Context* ctx,
                                                     ctx->index_sidebands[sb ? 0 : 1],              // Input, each block will read 5*32=160 values from here
                                                     ctx->level_sizes[i - 1]);                      // Number of sideband elements from level i-1
         // FIXME: Try to combine these two kernels into one, as they are independent.
-        reduce1 << <blocks, 5 * 32, 0, stream >> > (ctx->vertex_pyramid + ctx->level_offsets[i], // Each block will write 32 uvec4's into this
+        reduce1 << <blocks, 5 * 32, 0, ctx->indexStream >> > (ctx->vertex_pyramid + ctx->level_offsets[i], // Each block will write 32 uvec4's into this
                                                     ctx->vertex_sidebands[sb ? 1 : 0],           // Each block will write 32 uint32's into this
                                                     ctx->level_sizes[i],                         // Number of uvec4's in level i
                                                     ctx->vertex_sidebands[sb ? 0 : 1],           // Input, each block will read 5*32=160 values from here
@@ -1041,10 +1049,14 @@ void ComputeStuff::MC::buildPN(Context* ctx,
                                                 ctx->index_sidebands[sb ? 0 : 1],
                                                 ctx->level_sizes[ctx->levels - 4]);
       // FIXME: Try to combine these two kernels into one, as they are independent.
-      reduceApex << <1, 4 * 32, 0, stream >> > (ctx->vertex_pyramid + 8,
+      reduceApex << <1, 4 * 32, 0, ctx->indexStream >> > (ctx->vertex_pyramid + 8,
                                                 ctx->sum_d + 1,
                                                 ctx->vertex_sidebands[sb ? 0 : 1],
                                                 ctx->level_sizes[ctx->levels - 4]);
+
+
+      CHECKED_CUDA(cudaEventRecord(ctx->indexDoneEvent, ctx->indexStream));
+      CHECKED_CUDA(cudaStreamWaitEvent(stream, ctx->indexDoneEvent, 0));
     }
 
     // Non-indexed pyramid buildup
