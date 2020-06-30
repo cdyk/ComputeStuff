@@ -1,6 +1,11 @@
 // This file is part of ComputeStuff copyright (C) 2020 Christopher Dyken.
 // Released under the MIT license, please see LICENSE file for details.
 
+#define USE_NVTOOLS_EXT
+
+#ifdef USE_NVTOOLS_EXT
+#include <nvToolsExt.h> 
+#endif
 #include <cuda_runtime_api.h>
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
@@ -634,6 +639,9 @@ int main(int argc, char** argv)
 
     float min_time = 0.5;
     for (auto& bc : benchmark_cases) {
+#ifdef USE_NVTOOLS_EXT
+      nvtxRangePush(bc.name);
+#endif
       auto* ctx = createContext(tables, field_size, true, stream);
       fprintf(stderr, "%10s: Created context.\n", bc.name);
 
@@ -689,6 +697,9 @@ int main(int argc, char** argv)
       float cuda_ms = 0.f;
       unsigned iterations = 0;
       unsigned cuda_ms_n = 0;
+#ifdef USE_NVTOOLS_EXT
+      nvtxRangePush("Benchmark runs");
+#endif
       while (iterations < 100 || elapsed < min_time) {
         CHECKED_CUDA(cudaEventRecord(events[2 * (iterations % eventNum) + 0], stream));
         ComputeStuff::MC::buildPN(ctx,
@@ -727,6 +738,9 @@ int main(int argc, char** argv)
         elapsed = span.count();
         iterations++;
       }
+#ifdef USE_NVTOOLS_EXT
+      nvtxRangePop();
+#endif
       CHECKED_CUDA(cudaMemGetInfo(&free, &total));
       fprintf(stderr, "%10s: %.2f FPS (%.0fMVPS) cuda: %.2fms (%.0f MVPS) %ux%ux%u Nv=%u Ni=%u memfree=%zumb/%zumb\n",
               bc.name,
@@ -745,6 +759,9 @@ int main(int argc, char** argv)
 
       CHECKED_CUDA(cudaMemGetInfo(&free, &total));
       fprintf(stderr, "%10s: Released resources free=%zumb total=%zumb\n", bc.name, (free + 1024 * 1024 - 1) / (1024 * 1024), (total + 1024 * 1024 - 1) / (1024 * 1024));
+#ifdef USE_NVTOOLS_EXT
+      nvtxRangePop();
+#endif
     }
 
     fprintf(stderr, "Exiting...\n");
