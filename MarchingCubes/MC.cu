@@ -350,7 +350,7 @@ namespace {
   {
     const uint32_t offset0 = 5 * 32 * blockIdx.x + threadIdx.x;
 
-    // FIXME: Test iddea, each warp reads 32 values. read instead 32/4 uint4's.
+    // FIXME: Test idea, each warp reads 32 values. read instead 32/4 uint4's.
     __shared__ uint32_t sb[5 * 32];
     sb[threadIdx.x] = offset0 < n0 ? sb0_d[offset0] : 0;
     __syncthreads();
@@ -876,11 +876,12 @@ ComputeStuff::MC::Context* ComputeStuff::MC::createContext(const Tables* tables,
   }
 
   ctx->chunk_total = ctx->chunks.x * ctx->chunks.y * ctx->chunks.z;
+#if 0
   fprintf(stderr, "Grid size [%u x %u x %u]\n", ctx->grid_size.x, ctx->grid_size.y, ctx->grid_size.z);
   fprintf(stderr, "Chunks [%u x %u x %u] (= %u) cover=[%u x %u x %u]\n",
           ctx->chunks.x, ctx->chunks.y, ctx->chunks.z, ctx->chunk_total,
           31 * ctx->chunks.x, 5 * ctx->chunks.y, 5 * ctx->chunks.z);
-
+#endif
 
   // Pyramid base level, as number of uvec4's:
   ctx->level_sizes[0] = (800 * ctx->chunk_total + 4) / 5;
@@ -937,11 +938,12 @@ ComputeStuff::MC::Context* ComputeStuff::MC::createContext(const Tables* tables,
     CHECKED_CUDA(cudaMemcpyAsync(ctx->vertex_pyramid, ctx->level_offsets, sizeof(Context::level_offsets), cudaMemcpyHostToDevice, stream));
   }
 
-
+#if 0
   for (unsigned l = 0; l < ctx->levels; l++) {
     fprintf(stderr, "[%d] %8d %8d  (%8d)\n", l, ctx->level_offsets[l], ctx->level_sizes[l], 4 * ctx->level_sizes[l]);
   }
   fprintf(stderr, "Total %d, levels %d \n", ctx->total_size, ctx->levels);
+#endif
 
   CHECKED_CUDA(cudaHostAlloc(&ctx->sum_h, 2 * sizeof(uint32_t), cudaHostAllocMapped));
   CHECKED_CUDA(cudaHostGetDevicePointer(&ctx->sum_d, ctx->sum_h, 0));
