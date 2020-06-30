@@ -513,7 +513,7 @@ void main() {
 
     GLuint solidVS = createShader(solidVS_src, GL_VERTEX_SHADER);     assert(solidVS != 0);
     GLuint solidFS = createShader(solidFS_src, GL_FRAGMENT_SHADER);   assert(solidFS != 0);
-    solidProg = createProgram(solidVS, solidFS);                      assert(solidPrg != 0);
+    solidProg = createProgram(solidVS, solidFS);                      assert(solidProg != 0);
   }
 
 }
@@ -547,17 +547,19 @@ int main(int argc, char** argv)
       i++;
     }
 #endif
+    else if ((strcmp(argv[i], "-b") == 0) || (strcmp(argv[i], "--benchmark") == 0)) { benchmark = true; }
     else if ((strcmp(argv[i], "-h") == 0) || (strcmp(argv[i], "--help") == 0)) {
       fprintf(stderr, "HP5 Marching Cubes test application.\n");
       fprintf(stderr, "Copyright (C) 2020 Christopher Dyken. Released under the MIT license\n\n");
       fprintf(stderr, "Usage: %s [options] [dataset]\n\n", argv[0]);
       fprintf(stderr, "Options:\n");
-      fprintf(stderr, "    -d      Choose CUDA device.\n");
-      fprintf(stderr, "    -nx     Set number of samples in x direction.\n");
-      fprintf(stderr, "    -nx     Set number of samples in y direction.\n");
-      fprintf(stderr, "    -nx     Set number of samples in z direction.\n");
-      fprintf(stderr, "    -n      Set uniform number of samples in x,y,z directions.\n");
-      fprintf(stderr, "    -i      Set iso-value to extract surface for.\n");
+      fprintf(stderr, "    -d   int    Choose CUDA device.\n");
+      fprintf(stderr, "    -nx  int    Set number of samples in x direction.\n");
+      fprintf(stderr, "    -nx  int    Set number of samples in y direction.\n");
+      fprintf(stderr, "    -nx  int    Set number of samples in z direction.\n");
+      fprintf(stderr, "    -n   int    Set uniform number of samples in x,y,z directions.\n");
+      fprintf(stderr, "    -i   float  Set iso-value to extract surface for.\n");
+      fprintf(stderr, "    -b          Enable benchmark mode without OpenGL interop.\n");
       fprintf(stderr, "\nDataset:\n");
       fprintf(stderr, "    cayley    Built-in algebraic surface.\n");
       fprintf(stderr, "    file.dat  Raw binary uint16_t data with three binary uint16_t in front with x,y,z size.\n");
@@ -576,15 +578,180 @@ int main(int argc, char** argv)
     }
   }
 
+  if (benchmark) {
+    
+    int deviceCount = 0;
+    CHECKED_CUDA(cudaGetDeviceCount(&deviceCount));
 
-  glfwSetErrorCallback(onGLFWError);
-  if (!glfwInit()) {
-    fprintf(stderr, "GLFW failed to initialize.\n");
-    return EXIT_FAILURE;
+    bool found = false;
+    for (int i = 0; i < deviceCount; i++) {
+      cudaDeviceProp dev_prop;
+      cudaGetDeviceProperties(&dev_prop, i);
+      fprintf(stderr, "%c[%i] %s cap=%d.%d\n", i == deviceIndex ? '*' : ' ', i, dev_prop.name, dev_prop.major, dev_prop.minor);
+      if (i == deviceIndex) {
+        found = true;
+      }
+    }
+    if (!found) {
+      fprintf(stderr, "Illegal CUDA device index %d\n", deviceIndex);
+      return EXIT_FAILURE;
+    }
+    cudaSetDevice(deviceIndex);
+    CHECKED_CUDA(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+
+    // Create events for timing
+    static const unsigned eventNum = 32;
+    cudaEvent_t events[2 * eventNum];
+    for (size_t i = 0; i < 2 * eventNum; i++) {
+      CHECKED_CUDA(cudaEventCreate(&events[i]));
+      CHECKED_CUDA(cudaEventRecord(events[i], stream));
+    }
+
+    size_t free, total;
+    CHECKED_CUDA(cudaMemGetInfo(&free, &total));
+    fprintf(stderr, "CUDA memory free=%zumb total=%zumb\n", (free + 1024 * 1024 - 1) / (1024 * 1024), (total + 1024 * 1024 - 1) / (1024 * 1024));
+
+    float* scalar_field_d = nullptr;
+    setupScalarField(scalar_field_d, path, field_size, stream);
+    fprintf(stderr, "Built scalar field\n");
+
+    CHECKED_CUDA(cudaMemGetInfo(&free, &total));
+    fprintf(stderr, "CUDA memory free=%zumb total=%zumb\n", (free + 1024 * 1024 - 1) / (1024 * 1024), (total + 1024 * 1024 - 1) / (1024 * 1024));
+
+    auto* tables = createTables(stream);
+
+    struct {
+      const char* name;
+      bool indexed;
+      bool sync;
+    }
+    benchmark_cases[] = {
+      {"ix sync", true, true},
+      {"no-ix sync", false, true},
+      {"ix no-sync", true, false},
+      {"no-ix no-sync", false, false}
+    };
+
+    float min_time = 0.5;
+    for (auto& bc : benchmark_cases) {
+      auto* ctx = createContext(tables, field_size, true, stream);
+      fprintf(stderr, "%10s: Created context.\n", bc.name);
+
+      // Run with no output buffers to get size of output.
+      ComputeStuff::MC::buildPN(ctx,
+                                nullptr,
+                                nullptr,
+                                0,
+                                0,
+                                field_size.x,
+                                field_size.x* field_size.y,
+                                make_uint3(0, 0, 0),
+                                field_size,
+                                scalar_field_d,
+                                threshold,
+                                stream,
+                                true,
+                                true);
+      uint32_t vertex_count = 0;
+      uint32_t index_count = 0;
+      ComputeStuff::MC::getCounts(ctx, &vertex_count, &index_count, stream);
+
+      float* vertex_data_d = nullptr;
+      CHECKED_CUDA(cudaMalloc(&vertex_data_d, 6 * sizeof(float) * vertex_count));
+      uint32_t* index_data_d = nullptr;
+      CHECKED_CUDA(cudaMalloc(&index_data_d, sizeof(uint32_t)* index_count));
+      fprintf(stderr, "%10s: Allocated output buffers.\n", bc.name);
+
+      fprintf(stderr, "%10s: Warming up\n", bc.name);
+      for (unsigned i = 0; i < 100; i++) {
+        ComputeStuff::MC::buildPN(ctx,
+                                  vertex_data_d,
+                                  index_data_d,
+                                  6 * sizeof(float) * vertex_count,
+                                  sizeof(uint32_t) * index_count,
+                                  field_size.x,
+                                  field_size.x * field_size.y,
+                                  make_uint3(0, 0, 0),
+                                  field_size,
+                                  scalar_field_d,
+                                  threshold,
+                                  stream,
+                                  true,
+                                  true);
+        if (bc.sync) {
+          ComputeStuff::MC::getCounts(ctx, &vertex_count, &index_count, stream);
+        }
+      }
+
+      fprintf(stderr, "%10s: Benchmarking\n", bc.name);
+      auto start = std::chrono::high_resolution_clock::now();
+      double elapsed = 0.f;
+      float cuda_ms = 0.f;
+      unsigned iterations = 0;
+      unsigned cuda_ms_n = 0;
+      while (iterations < 100 || elapsed < min_time) {
+        CHECKED_CUDA(cudaEventRecord(events[2 * (iterations % eventNum) + 0], stream));
+        ComputeStuff::MC::buildPN(ctx,
+                                  vertex_data_d,
+                                  index_data_d,
+                                  6 * sizeof(float) * vertex_count,
+                                  sizeof(uint32_t) * index_count,
+                                  field_size.x,
+                                  field_size.x * field_size.y,
+                                  make_uint3(0, 0, 0),
+                                  field_size,
+                                  scalar_field_d,
+                                  threshold,
+                                  stream,
+                                  true,
+                                  true);
+        if (bc.sync) {
+          ComputeStuff::MC::getCounts(ctx, &vertex_count, &index_count, stream);
+        }
+        CHECKED_CUDA(cudaEventRecord(events[2 * (iterations % eventNum) + 1], stream));
+
+        if (eventNum <= iterations) {
+          float ms = 0;
+          if (!bc.sync) {
+            CHECKED_CUDA(cudaEventSynchronize(events[2 * ((iterations + 1) % eventNum) + 1]));
+          }
+
+          CHECKED_CUDA(cudaEventElapsedTime(&ms,
+                                            events[2 * ((iterations + 1) % eventNum) + 0],
+                                            events[2 * ((iterations + 1) % eventNum) + 1]));
+          cuda_ms += ms;
+          cuda_ms_n++;
+        }
+
+        std::chrono::duration<double> span = std::chrono::high_resolution_clock::now() - start;
+        elapsed = span.count();
+        iterations++;
+      }
+      CHECKED_CUDA(cudaMemGetInfo(&free, &total));
+      fprintf(stderr, "%10s: %.2f FPS (%.0fMVPS) cuda: %.2fms (%.0f MVPS) %ux%ux%u Nv=%u Ni=%u memfree=%zumb/%zumb\n",
+              bc.name,
+              iterations / elapsed, (float(iterations) * field_size.x * field_size.y * field_size.z) / (1000000.f * elapsed),
+              cuda_ms / cuda_ms_n, (float(cuda_ms_n) * field_size.x * field_size.y * field_size.z) / (1000.f * cuda_ms),
+              field_size.x, field_size.y, field_size.z,
+              vertex_count,
+              index_count,
+              (free + 1024 * 1024 - 1) / (1024 * 1024),
+              (total + 1024 * 1024 - 1) / (1024 * 1024));
+
+      freeContext(ctx, stream);
+      CHECKED_CUDA(cudaStreamSynchronize(stream));
+      CHECKED_CUDA(cudaFree(vertex_data_d));
+      CHECKED_CUDA(cudaFree(index_data_d));
+
+      CHECKED_CUDA(cudaMemGetInfo(&free, &total));
+      fprintf(stderr, "%10s: Released resources free=%zumb total=%zumb\n", bc.name, (free + 1024 * 1024 - 1) / (1024 * 1024), (total + 1024 * 1024 - 1) / (1024 * 1024));
+    }
+
+    fprintf(stderr, "Exiting...\n");
+    CHECKED_CUDA(cudaMemGetInfo(&free, &total));
+    fprintf(stderr, "CUDA memory free=%zumb total=%zumb\n", (free + 1024 * 1024 - 1) / (1024 * 1024), (total + 1024 * 1024 - 1) / (1024 * 1024));
+    return 0;
   }
-  glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
-  glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-  glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
   GLFWwindow* win = nullptr;
   GLuint shadedProg = 0;
@@ -623,14 +790,8 @@ int main(int argc, char** argv)
 
   auto* tables = createTables(stream);
 
-
-
-
-
-  //GLuint vdatabuf = createBuffer(GL_ARRAY_BUFFER, GL_STATIC_DRAW, sizeof(vertexData), (const void*)vertexData);
   GLuint wireBoxVertexBuffer = createBuffer(GL_ARRAY_BUFFER, GL_STATIC_DRAW, sizeof(wireBoxVertexData),  wireBoxVertexData);
   uint32_t wireBoxVertexCount = sizeof(wireBoxVertexData) / (3 * sizeof(float));
-
   GLuint wireBoxVbo = 0;
   glGenVertexArrays(1, &wireBoxVbo);
   glBindVertexArray(wireBoxVbo);
@@ -666,7 +827,7 @@ int main(int argc, char** argv)
   auto start = std::chrono::system_clock::now();
   auto timer = std::chrono::high_resolution_clock::now();
   float cuda_ms = 0.f;
-  unsigned frames = 0;
+  unsigned frames = 0u;
 
   ComputeStuff::MC::Context* ctx = nullptr;
   while (!glfwWindowShouldClose(win)) {
