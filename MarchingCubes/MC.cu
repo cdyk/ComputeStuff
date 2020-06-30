@@ -217,39 +217,22 @@ namespace {
   //
   // But this requires careful masking to avoid producing extra vertices, we
   // basically implement GL_CLAMP-behavior.
-  template<class FieldType>
-  __global__ __launch_bounds__(32) void reduceBaseIndexed(uint8_t* __restrict__           index_cases_d,
-                                                          uint4* __restrict__             out_vertex_level0_d,
-                                                          uint32_t* __restrict__          out_vertex_sideband_d,
-                                                          uint4* __restrict__             out_index_level0_d,
-                                                          uint32_t* __restrict__          out_index_sideband_d,
-                                                          const uint8_t* __restrict__     index_count,
-                                                          const FieldType* __restrict__   field_d,
-                                                          const FieldType* __restrict__   field_end_d,
-                                                          const size_t                    field_row_stride,
-                                                          const size_t                    field_slice_stride,
-                                                          const float                     threshold,
-                                                          const uint3                     chunks,
-                                                          const uint3                     grid_max_index)
+  
+  template<class FieldType, bool indexed>
+  __device__ void reduceBaseKernel(uint8_t* __restrict__ index_case_ptr,
+                                   uint4* __restrict__ out_index_level0_ptr,
+                                   uint4* __restrict__ out_vertex_level0_ptr,
+                                   uint32_t* __restrict__ out_vertex_sideband_ptr,
+                                   uint32_t* __restrict__ out_index_sideband_ptr,
+                                   const uint8_t* __restrict__   index_count,
+                                   const FieldType* __restrict__ ptr,
+                                   size_t field_row_stride,
+                                   size_t field_slice_stride,
+                                   uint3 cell,
+                                   uint3 grid_max_index,
+                                   unsigned thread,
+                                   float threshold)
   {
-    const uint32_t warp = threadIdx.x / 32;
-    const uint32_t thread = threadIdx.x % 32;
-    const uint32_t chunk_ix = blockIdx.x + warp;
-
-    // Figure out which chunk we are in.
-    // FIXME: Try to use grid extents to mach chunk grid to avoid all these modulo/divisions.
-    uint3 chunk = make_uint3(chunk_ix % chunks.x,
-                             (chunk_ix / chunks.x) % chunks.y,
-                             (chunk_ix / chunks.x) / chunks.y);
-    uint3 cell = make_uint3(31 * chunk.x + thread,
-                            5 * chunk.y,
-                            5 * chunk.z);
-
-    // One warp processes a 31 * 5 * 5 chunk, outputs 800 mc cases to base level and 800/5=160 sums to sideband.
-    const FieldType* ptr = field_d
-      + cell.z * field_slice_stride
-      + cell.y * field_row_stride
-      + min(grid_max_index.x, cell.x);
 
     // First fetch initial z-slice, and then fetch 5 additional slices, to
     // produce 5 slices of cells.
@@ -307,27 +290,21 @@ namespace {
           vsum = vc_y0 + vc_y1 + vc_y2 + vc_y3 + vc_y4;
           isum = ic_y0 + ic_y1 + ic_y2 + ic_y3 + ic_y4;
           if (isum | vsum) {
-            // 8-bit arithmetic should suffice here
-            out_index_level0_d[32 * 5 * blockIdx.x + 32 * z + thread] = make_uint4(vc_y0,
-                                                                                   vc_y0 + vc_y1,
-                                                                                   vc_y0 + vc_y1 + vc_y2,
-                                                                                   vc_y0 + vc_y1 + vc_y2 + vc_y3);
-
-            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * z + thread) + 0] = case_y0;
-            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * z + thread) + 1] = case_y1;
-            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * z + thread) + 2] = case_y2;
-            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * z + thread) + 3] = case_y3;
-            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * z + thread) + 4] = case_y4;
-            out_index_level0_d[32 * 5 * blockIdx.x + 32 * z + thread] = make_uint4(ic_y0,
-                                                                                   ic_y0 + ic_y1,
-                                                                                   ic_y0 + ic_y1 + ic_y2,
-                                                                                   ic_y0 + ic_y1 + ic_y2 + ic_y3);
+            index_case_ptr[5 * (32 * z) + 0] = case_y0;
+            index_case_ptr[5 * (32 * z) + 1] = case_y1;
+            index_case_ptr[5 * (32 * z) + 2] = case_y2;
+            index_case_ptr[5 * (32 * z) + 3] = case_y3;
+            index_case_ptr[5 * (32 * z) + 4] = case_y4;
+            out_index_level0_ptr[32 * z] = make_uint4(ic_y0,
+                                                      ic_y0 + ic_y1,
+                                                      ic_y0 + ic_y1 + ic_y2,
+                                                      ic_y0 + ic_y1 + ic_y2 + ic_y3);
           }
           if (vsum) {
-            out_vertex_level0_d[32 * 5 * blockIdx.x + 32 * z + thread] = make_uint4(vc_y0,
-                                                                                    vc_y0 + vc_y1,
-                                                                                    vc_y0 + vc_y1 + vc_y2,
-                                                                                    vc_y0 + vc_y1 + vc_y2 + vc_y3);
+            out_vertex_level0_ptr[32 * z] = make_uint4(vc_y0,
+                                                       vc_y0 + vc_y1,
+                                                       vc_y0 + vc_y1 + vc_y2,
+                                                       vc_y0 + vc_y1 + vc_y2 + vc_y3);
 
           }
 
@@ -335,10 +312,61 @@ namespace {
       }
       cell.z++;
       // Store sideband data.
-      out_vertex_sideband_d[32 * (5 * blockIdx.x + z) + threadIdx.x] = vsum;
-      out_index_sideband_d[32 * (5 * blockIdx.x + z) + threadIdx.x] = isum;
+      out_vertex_sideband_ptr[32 * z] = vsum;
+      out_index_sideband_ptr[32 * z] = isum;
     }
   }
+
+  
+  
+  template<class FieldType>
+  __global__ __launch_bounds__(32) void reduceBaseIndexed(uint8_t* __restrict__           index_cases_d,
+                                                          uint4* __restrict__             out_vertex_level0_d,
+                                                          uint32_t* __restrict__          out_vertex_sideband_d,
+                                                          uint4* __restrict__             out_index_level0_d,
+                                                          uint32_t* __restrict__          out_index_sideband_d,
+                                                          const uint8_t* __restrict__     index_count,
+                                                          const FieldType* __restrict__   field_d,
+                                                          const FieldType* __restrict__   field_end_d,
+                                                          const size_t                    field_row_stride,
+                                                          const size_t                    field_slice_stride,
+                                                          const float                     threshold,
+                                                          const uint3                     chunks,
+                                                          const uint3                     grid_max_index)
+  {
+    const uint32_t warp = threadIdx.x / 32;
+    const uint32_t thread = threadIdx.x % 32;
+    const uint32_t chunk_ix = blockIdx.x + warp;
+
+    // Figure out which chunk we are in.
+    // FIXME: Try to use grid extents to mach chunk grid to avoid all these modulo/divisions.
+    uint3 chunk = make_uint3(chunk_ix % chunks.x,
+                             (chunk_ix / chunks.x) % chunks.y,
+                             (chunk_ix / chunks.x) / chunks.y);
+    uint3 cell = make_uint3(31 * chunk.x + thread,
+                            5 * chunk.y,
+                            5 * chunk.z);
+
+    // One warp processes a 31 * 5 * 5 chunk, outputs 800 mc cases to base level and 800/5=160 sums to sideband.
+    reduceBaseKernel<FieldType, true>(index_cases_d         + static_cast<size_t>(5 * 32 * 5 * blockIdx.x + 5 * thread), // Index doesn't need more than 32 bits
+                                      out_index_level0_d    + static_cast<size_t>(    32 * 5 * blockIdx.x +     thread),
+                                      out_vertex_level0_d   + static_cast<size_t>(    32 * 5 * blockIdx.x +     thread),
+                                      out_vertex_sideband_d + static_cast<size_t>(    32 * 5 * blockIdx.x +     thread),
+                                      out_index_sideband_d  + static_cast<size_t>(    32 * 5 * blockIdx.x +     thread),
+                                      index_count,
+                                      field_d + cell.z * field_slice_stride
+                                              + cell.y * field_row_stride
+                                              + min(grid_max_index.x, cell.x),
+                                      field_row_stride,
+                                      field_slice_stride,
+                                      cell,
+                                      grid_max_index,
+                                      thread,
+                                      threshold);
+  }
+
+  
+
 
 
   // Reads 160 values, outputs HP level of 128 values, and 32 sideband values.
