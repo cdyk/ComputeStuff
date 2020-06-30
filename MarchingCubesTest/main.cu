@@ -472,6 +472,49 @@ void main() {
     return false;
   }
 
+  void setupScalarField(float*& scalar_field_d, const char* path, const uint3& field_size, cudaStream_t stream)
+  {
+    // Set up scalar field
+    if (!path) {
+      fprintf(stderr, "No input file specified.\n");
+      exit(EXIT_FAILURE);
+    }
+    else if (strcmp("cayley", path) == 0) {
+      buildCayleyField();
+    }
+    else if (!readFile(path)) {
+      exit(EXIT_FAILURE);
+    }
+    assert(field_size.x * field_size.y * field_size.z * 4 == scalarField_host.size());
+    fprintf(stderr, "Scalar field is [%d x %d x %d] (%d cells total)\n", field_size.x, field_size.y, field_size.z, field_size.x * field_size.y * field_size.z);
+    CHECKED_CUDA(cudaMalloc(&scalar_field_d, scalarField_host.size()));
+    CHECKED_CUDA(cudaMemcpyAsync(scalar_field_d, scalarField_host.data(), scalarField_host.size(), cudaMemcpyHostToDevice, stream));
+  }
+
+  void initWindowAndGL(GLFWwindow*& win, GLuint& shadedProg, GLuint& solidProg)
+  {
+    glfwSetErrorCallback(onGLFWError);
+    if (!glfwInit()) {
+      fprintf(stderr, "GLFW failed to initialize.\n");
+      exit(EXIT_FAILURE);
+    }
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+
+    win = glfwCreateWindow(1280, 720, "Marching cubes test application", nullptr, nullptr);
+    glfwSetKeyCallback(win, onKey);
+    glfwMakeContextCurrent(win);
+    gladLoadGL(glfwGetProcAddress);
+
+    GLuint simpleVS = createShader(simpleVS_src, GL_VERTEX_SHADER);   assert(simpleVS != 0);
+    GLuint simpleFS = createShader(simpleFS_src, GL_FRAGMENT_SHADER); assert(simpleFS != 0);
+    shadedProg = createProgram(simpleVS, simpleFS);                   assert(shadedProg != 0);
+
+    GLuint solidVS = createShader(solidVS_src, GL_VERTEX_SHADER);     assert(solidVS != 0);
+    GLuint solidFS = createShader(solidFS_src, GL_FRAGMENT_SHADER);   assert(solidFS != 0);
+    solidProg = createProgram(solidVS, solidFS);                      assert(solidPrg != 0);
+  }
 
 }
 
@@ -480,9 +523,9 @@ void main() {
 int main(int argc, char** argv)
 {
   cudaStream_t stream;
-  GLFWwindow* win;
   const char* path = nullptr;
   int deviceIndex = 0;
+  bool benchmark = false;
 
   for (int i = 1; i < argc; i++) {
     if (i + 1 < argc && (strcmp(argv[i], "-d") == 0 || strcmp(argv[i], "--device") == 0)) { deviceIndex = std::atoi(argv[i + 1]); i++; }
@@ -543,10 +586,10 @@ int main(int argc, char** argv)
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-  win = glfwCreateWindow(1280, 720, "Marching cubes test application", nullptr, nullptr);
-  glfwSetKeyCallback(win, onKey);
-  glfwMakeContextCurrent(win);
-  gladLoadGL(glfwGetProcAddress);
+  GLFWwindow* win = nullptr;
+  GLuint shadedProg = 0;
+  GLuint solidProg = 0;
+  initWindowAndGL(win, shadedProg, solidProg);
 
   unsigned int deviceCount;
   CHECKED_CUDA(cudaGLGetDevices(&deviceCount, nullptr, 0, cudaGLDeviceListAll));
@@ -575,43 +618,13 @@ int main(int argc, char** argv)
   CHECKED_CUDA(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
 
   // Set up scalar field
-  if (!path) {
-    fprintf(stderr, "No input file specified.\n");
-    return EXIT_FAILURE;
-  }
-  else if (strcmp("cayley", path) == 0) {
-    buildCayleyField();
-  }
-  else if (!readFile(path)) {
-    return EXIT_FAILURE;
-  }
-  fprintf(stderr, "Scalar field is [%d x %d x %d] (%d cells total)\n", field_size.x, field_size.y, field_size.z, field_size.x * field_size.y * field_size.z);
-  float* deviceMem = nullptr;
-  CHECKED_CUDA(cudaMalloc(&deviceMem, scalarField_host.size()));
-  CHECKED_CUDA(cudaMemcpyAsync(deviceMem, scalarField_host.data(), scalarField_host.size(), cudaMemcpyHostToDevice, stream));
-
-  assert(nx * ny * nz * 4 == scalarField_host.size());
-
+  float* scalar_field_d = nullptr;
+  setupScalarField(scalar_field_d, path, field_size, stream);
 
   auto* tables = createTables(stream);
 
-  GLuint simpleVS = createShader(simpleVS_src, GL_VERTEX_SHADER);
-  assert(simpleVS != 0);
 
-  GLuint simpleFS = createShader(simpleFS_src, GL_FRAGMENT_SHADER);
-  assert(simpleFS != 0);
 
-  GLuint simplePrg = createProgram(simpleVS, simpleFS);
-  assert(simplePrg != 0);
-
-  GLuint solidVS = createShader(solidVS_src, GL_VERTEX_SHADER);
-  assert(solidVS != 0);
-
-  GLuint solidFS = createShader(solidFS_src, GL_FRAGMENT_SHADER);
-  assert(solidFS != 0);
-
-  GLuint solidPrg = createProgram(solidVS, solidFS);
-  assert(solidPrg != 0);
 
 
   //GLuint vdatabuf = createBuffer(GL_ARRAY_BUFFER, GL_STATIC_DRAW, sizeof(vertexData), (const void*)vertexData);
@@ -691,7 +704,7 @@ int main(int argc, char** argv)
                                 field_size.x* field_size.y,
                                 make_uint3(0, 0, 0),
                                 field_size,
-                                deviceMem,
+                                scalar_field_d,
                                 threshold,
                                 stream,
                                 true,
@@ -752,7 +765,7 @@ int main(int argc, char** argv)
                                   field_size.x* field_size.y,
                                   make_uint3(0, 0, 0),
                                   field_size,
-                                  deviceMem,
+                                  scalar_field_d,
                                   threshold,
                                   stream,
                                   false,
@@ -781,7 +794,7 @@ int main(int argc, char** argv)
     }
     glBindVertexArray(cudaVbo);
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-    glUseProgram(simplePrg);
+    glUseProgram(shadedProg);
     glUniformMatrix4fv(0, 1, GL_FALSE, normal_matrix);
     glUniformMatrix4fv(1, 1, GL_FALSE, modelview_projection);
     glUniform4f(2, 0.6f, 0.6f, 0.8f, 1.f);
@@ -796,7 +809,7 @@ int main(int argc, char** argv)
 
 
     if (wireframe) {
-      glUseProgram(solidPrg);
+      glUseProgram(solidProg);
       glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
       glUniformMatrix4fv(0, 1, GL_FALSE, normal_matrix);
       glUniformMatrix4fv(1, 1, GL_FALSE, modelview_projection);
@@ -814,7 +827,7 @@ int main(int argc, char** argv)
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 
     glBindVertexArray(wireBoxVbo);
-    glUseProgram(solidPrg);
+    glUseProgram(solidProg);
     glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
     glUniformMatrix4fv(0, 1, GL_FALSE, normal_matrix);
     glUniformMatrix4fv(1, 1, GL_FALSE, modelview_projection);
@@ -851,8 +864,6 @@ int main(int argc, char** argv)
   }
   glfwDestroyWindow(win);
   glfwTerminate();
-
-  glDeleteShader(simpleVS);
 
   return EXIT_SUCCESS;
 }
