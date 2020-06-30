@@ -28,9 +28,7 @@ namespace {
   };
 
   FieldFormat format = FieldFormat::Float;
-  uint32_t nx = 256;
-  uint32_t ny = 256;
-  uint32_t nz = 256;
+  uint3 field_size = make_uint3(256, 256, 256);
   bool wireframe = false;
   bool recreate_context = true;
   bool indexed = true;
@@ -311,15 +309,15 @@ void main() {
 
   void buildCayleyField()
   {
-    const size_t N = static_cast<size_t>(nx) * ny * nz;
+    const size_t N = static_cast<size_t>(field_size.x) * field_size.y * field_size.z;
     switch (format) {
     case FieldFormat::UInt8: {
       scalarField_host.resize(N);
       auto* dst = reinterpret_cast<uint8_t*>(scalarField_host.data());
-      for (unsigned k = 0; k < nz; k++) {
-        for (unsigned j = 0; j < ny; j++) {
-          for (unsigned i = 0; i < nx; i++) {
-            float v = cayley(i, j, k, nx, ny, nz);
+      for (unsigned k = 0; k < field_size.z; k++) {
+        for (unsigned j = 0; j < field_size.y; j++) {
+          for (unsigned i = 0; i < field_size.x; i++) {
+            float v = cayley(i, j, k, field_size);
             v = 0.5f * 255.f * (v + 1.f);
             if (v < 0.f) v = 0.f;
             if (255.f < v) v = 255.f;
@@ -332,10 +330,10 @@ void main() {
     case FieldFormat::UInt16: {
       scalarField_host.resize(sizeof(uint16_t) * N);
       auto* dst = reinterpret_cast<uint16_t*>(scalarField_host.data());
-      for (unsigned k = 0; k < nz; k++) {
-        for (unsigned j = 0; j < ny; j++) {
-          for (unsigned i = 0; i < nx; i++) {
-            float v = cayley(i, j, k, nx, ny, nz);
+      for (unsigned k = 0; k < field_size.z; k++) {
+        for (unsigned j = 0; j < field_size.y; j++) {
+          for (unsigned i = 0; i < field_size.x; i++) {
+            float v = cayley(i, j, k, field_size);
             v = 0.5f * 65535.f * (v + 1.f);
             if (v < 0.f) v = 0.f;
             if (65535.f < v) v = 65535.f;
@@ -348,10 +346,10 @@ void main() {
     case FieldFormat::Float: {
       scalarField_host.resize(sizeof(float) * N);
       auto* dst = reinterpret_cast<float*>(scalarField_host.data());
-      for (unsigned k = 0; k < nz; k++) {
-        for (unsigned j = 0; j < ny; j++) {
-          for (unsigned i = 0; i < nx; i++) {
-            *dst++ = cayley(i, j, k, nx, ny, nz);
+      for (unsigned k = 0; k < field_size.z; k++) {
+        for (unsigned j = 0; j < field_size.y; j++) {
+          for (unsigned i = 0; i < field_size.x; i++) {
+            *dst++ = cayley(i, j, k, field_size);
           }
         }
       }
@@ -380,10 +378,10 @@ void main() {
       if (sizeof(header) <= size) {
         if (fseek(fp, 0L, SEEK_SET) == 0) {
           if (fread(header, sizeof(header), 1, fp) == 1) {
-            nx = header[0] | header[1] << 8;
-            ny = header[2] | header[3] << 8;
-            nz = header[4] | header[5] << 8;
-            size_t N = static_cast<size_t>(nx) * ny * nz;
+            field_size.x = header[0] | header[1] << 8;
+            field_size.y = header[2] | header[3] << 8;
+            field_size.z = header[4] | header[5] << 8;
+            size_t N = static_cast<size_t>(field_size.x) * field_size.y * field_size.z;
             if ((N + 3) * 2 != size) {
               fprintf(stderr, "Unexpected file size.\n");
             }
@@ -449,10 +447,10 @@ int main(int argc, char** argv)
 
   for (int i = 1; i < argc; i++) {
     if (i + 1 < argc && (strcmp(argv[i], "-d") == 0 || strcmp(argv[i], "--device") == 0)) { deviceIndex = std::atoi(argv[i + 1]); i++; }
-    else if (i + 1 < argc && strcmp(argv[i], "-nx") == 0) { nx = uint32_t(std::atoi(argv[i + 1])); i++; }
-    else if (i + 1 < argc && strcmp(argv[i], "-ny") == 0) { ny = uint32_t(std::atoi(argv[i + 1])); i++; }
-    else if (i + 1 < argc && strcmp(argv[i], "-nz") == 0) { nz = uint32_t(std::atoi(argv[i + 1])); i++; }
-    else if (i + 1 < argc && strcmp(argv[i], "-n") == 0) { nx = uint32_t(std::atoi(argv[i + 1])); ny = nx; nz = nx; i++; }
+    else if (i + 1 < argc && strcmp(argv[i], "-nx") == 0) { field_size.x = uint32_t(std::atoi(argv[i + 1])); i++; }
+    else if (i + 1 < argc && strcmp(argv[i], "-ny") == 0) { field_size.y = uint32_t(std::atoi(argv[i + 1])); i++; }
+    else if (i + 1 < argc && strcmp(argv[i], "-nz") == 0) { field_size.z = uint32_t(std::atoi(argv[i + 1])); i++; }
+    else if (i + 1 < argc && strcmp(argv[i], "-n") == 0) { field_size.x = uint32_t(std::atoi(argv[i + 1])); field_size.y = field_size.x; field_size.z = field_size.x; i++; }
     else if (i + 1 < argc && strcmp(argv[i], "-i") == 0) { threshold = static_cast<float>(std::atof(argv[i + 1])); i++; }
 #if 0
     // Currently only float is supported
@@ -548,7 +546,7 @@ int main(int argc, char** argv)
   else if (!readFile(path)) {
     return EXIT_FAILURE;
   }
-  fprintf(stderr, "Scalar field is [%d x %d x %d] (%d cells total)\n", nx, ny, nz, nx * ny * nz);
+  fprintf(stderr, "Scalar field is [%d x %d x %d] (%d cells total)\n", field_size.x, field_size.y, field_size.z, field_size.x * field_size.y * field_size.z);
   float* deviceMem = nullptr;
   CHECKED_CUDA(cudaMalloc(&deviceMem, scalarField_host.size()));
   CHECKED_CUDA(cudaMemcpyAsync(deviceMem, scalarField_host.data(), scalarField_host.size(), cudaMemcpyHostToDevice, stream));
@@ -628,7 +626,7 @@ int main(int argc, char** argv)
     {
       if (ctx == nullptr || recreate_context) {
         freeContext(ctx, stream);
-        ctx = createContext(tables, make_uint3(nx, ny, nz), indexed, stream);
+        ctx = createContext(tables, field_size, indexed, stream);
         recreate_context = false;
       }
 
@@ -650,10 +648,10 @@ int main(int argc, char** argv)
                                 cudaIndexBuf_d,
                                 cudaVertexBuf_size,
                                 cudaIndexBuf_size,
-                                nx,
-                                nx* ny,
+                                field_size.x,
+                                field_size.x* field_size.y,
                                 make_uint3(0, 0, 0),
-                                make_uint3(nx, ny, nz),
+                                field_size,
                                 deviceMem,
                                 threshold,
                                 stream,
@@ -711,10 +709,10 @@ int main(int argc, char** argv)
                                   cudaIndexBuf_d,
                                   cudaVertexBuf_size,
                                   cudaIndexBuf_size,
-                                  nx,
-                                  nx*ny,
+                                  field_size.x,
+                                  field_size.x* field_size.y,
                                   make_uint3(0, 0, 0),
-                                  make_uint3(nx, ny, nz),
+                                  field_size,
                                   deviceMem,
                                   threshold,
                                   stream,
@@ -825,9 +823,9 @@ int main(int argc, char** argv)
         size_t free, total;
         CHECKED_CUDA(cudaMemGetInfo(&free, &total));
         fprintf(stderr, "%.2f FPS (%.2f MVPS) cuda avg: %.2fms (%.2f MVPS) %ux%ux%u Nv=%u Ni=%u ix=%s memfree=%zumb/%zumb\n",
-                frames / s, (float(frames)* nx *ny * nz) / (1000000.f * s),
-                cuda_ms/frames, (float(frames)* nx* ny* nz) / (1000.f * cuda_ms),
-                nx, ny, nz,
+                frames / s, (float(frames)* field_size.x * field_size.y * field_size.z) / (1000000.f * s),
+                cuda_ms/frames, (float(frames)* field_size.x* field_size.y* field_size.z) / (1000.f * cuda_ms),
+                field_size.x, field_size.y, field_size.z,
                 vertex_count,
                 index_count,
                 indexed ? "y" : "n",
