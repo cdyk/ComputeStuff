@@ -7,159 +7,10 @@
 
 namespace {
 
-  // Non-indexed baselevel
-  // ---------------------
-
-  // Fetch 32[x] x 5[y] samples from the scalar field. Tests only for end
-  // of memory block with field, so samples for cells outside of grid will
-  // contain garbage, but that doens't matter here as this will be masked
-  // out later.
-  template<typename T>
-  __device__ float2 fetch(const T* ptr, const T* end, const size_t stride, const float t, unsigned thread)
-  {
-    float t0 = ((ptr < end) && (ptr[0] < t) ? 1.f : 0.f); ptr += stride;
-    float t1 = ((ptr < end) && (ptr[0] < t) ? 1.f : 0.f); ptr += stride;
-    float t2 = ((ptr < end) && (ptr[0] < t) ? 1.f : 0.f); ptr += stride;
-    float t3 = ((ptr < end) && (ptr[0] < t) ? 1.f : 0.f); ptr += stride;
-    float t4 = ((ptr < end) && (ptr[0] < t) ? 1.f : 0.f); ptr += stride;
-    float t5 = ((ptr < end) && (ptr[0] < t) ? 1.f : 0.f); ptr += stride;
-
-    // Simd-in-float3, packing 6 uint8 bitsets into 2 float32.
-    // Using float units instead of integer units reduces pressure on integer
-    // uints, which are a bit pressured. Gives a slight speedup.
-    float r0 = __fmaf_rn(float(1 << 16), t2, __fmaf_rn(float(1 << 8), t1, t0));
-    float r1 = __fmaf_rn(float(1 << 16), t5, __fmaf_rn(float(1 << 8), t4, t3));
-    return make_float2(r0, r1);
-  }
-
-  // Fetch samples from scalar-field, deduce MC cases for cells, and write out
-  // first level ot the HistoPyramid and sideband.
-  //
-  // Since cells needs surrounding samples, 32 samples are fetched to produce
-  // 31 cells. This wastes 1/32 of the processing, but yields pretty coalesced
-  // fetches. Profiling shows a bit too many memory transactions, which I guess
-  // is due to fetches not being aligned (first warp fetches values 0..31, next
-  // warp fetches 31...62, etc, so requests gets split).
-  //
-  // The cell grid is decomposed into chunks of 32 x 5 x 5. The last x-value is,
-  // as mentioned, discarded, so the extent is actually 31 x 5 x 5, but the
-  // full set of values are written.
-  //
-  // I have tried (RTX2080 + CUDA 11) to just let the cache system handle this
-  // and create a full set of 32 cells, but that was slower. Also tried to add
-  // extra end-fetch for the last thread to get the missing samnple for a full
-  // set of 32 cells, but that was slower as well.
-  template<class FieldType>
-  __global__ __launch_bounds__(32) void reduceBase(uint8_t* __restrict__           index_cases_d,
-                                                   uint4* __restrict__             out_index_level0_d,
-                                                   uint32_t* __restrict__          out_index_sideband_d,
-                                                   const uint8_t* __restrict__     index_count,
-                                                   const FieldType* __restrict__   field_d,
-                                                   const FieldType* __restrict__   field_end_d,
-                                                   const size_t                    field_row_stride,
-                                                   const size_t                    field_slice_stride,
-                                                   const float                     threshold,
-                                                   const uint3                     chunks,
-                                                   const uint3                     cells)
-  {
-    const uint32_t warp = threadIdx.x / 32;
-    const uint32_t thread = threadIdx.x % 32;
-    const uint32_t chunk_ix = blockIdx.x + warp;
-
-    // Figure out which chunk we are in.
-    // FIXME: Try to use grid extents to mach chunk grid to avoid all these modulo/divisions.
-    uint3 chunk = make_uint3(chunk_ix % chunks.x,
-                             (chunk_ix / chunks.x) % chunks.y,
-                             (chunk_ix / chunks.x) / chunks.y);
-    uint3 cell = make_uint3(31 * chunk.x + thread,
-                            5 * chunk.y,
-                            5 * chunk.z);
-
-    // One warp processes a 32 * 5 * 5 chunk, outputs 800 mc cases to base level and 800/5=160 sums to sideband.
-    const FieldType* ptr = field_d
-      + cell.z * field_slice_stride
-      + cell.y * field_row_stride
-      + cell.x;
-
-    bool xmask = cell.x < cells.x;
-
-    // First fetch initial z-slice, and then fetch 5 additional slices, to
-    // produce 5 slices of cells.
-    float2 prev = fetch(ptr, field_end_d, field_row_stride, threshold, thread);
-    ptr += field_slice_stride;
-    for (unsigned z = 0; z < 5; z++) {
-      unsigned isum = 0;
-      bool zmask = cell.z < cells.z;
-      if (zmask) {
-        float2 next = fetch(ptr, field_end_d, field_row_stride, threshold, thread);
-        ptr += field_slice_stride;
-
-        // Merge bits from previous and current slice.
-        float2 t0 = make_float2(__fmaf_rn(float(1 << 4), next.x, prev.x),
-                                __fmaf_rn(float(1 << 4), next.y, prev.y));
-        prev = next;
-
-        // Fetch case from x+1 using warp-shuffle. Last thread has garbage data,
-        // but that result is masked out.
-        float2 tt = make_float2(__shfl_down_sync(0xffffffff, t0.x, 1),
-                                __shfl_down_sync(0xffffffff, t0.y, 1));
-
-        if (xmask && thread < 31) {
-          // Merge in results from the warp shuffle. 
-          uint32_t g0 = static_cast<uint32_t>(__fmaf_rn(2.f, tt.x, t0.x));
-          uint32_t g1 = static_cast<uint32_t>(__fmaf_rn(2.f, tt.y, t0.y));
-
-          // Fetch y+1 cases and merge along Y
-          uint32_t s0 = __byte_perm(g0, g1, (4 << 12) | (2 << 8) | (1 << 4) | (0 << 0));
-          g0 = g0 | (s0 >> 6);
-          g1 = g1 | (g1 >> 6);
-
-          // Extract cases for the 5-element y-column of cases that each thread has
-          uint8_t case_y0 = __byte_perm(g0, 0, (4 << 12) | (4 << 8) | (4 << 4) | (0 << 0));
-          uint8_t case_y1 = __byte_perm(g0, 0, (4 << 12) | (4 << 8) | (4 << 4) | (1 << 0));
-          uint8_t case_y2 = __byte_perm(g0, 0, (4 << 12) | (4 << 8) | (4 << 4) | (2 << 0));
-          uint8_t case_y3 = __byte_perm(g1, 0, (4 << 12) | (4 << 8) | (4 << 4) | (0 << 0));
-          uint8_t case_y4 = __byte_perm(g1, 0, (4 << 12) | (4 << 8) | (4 << 4) | (1 << 0));
-
-          // Look up vertex count. Set count for cells outside of domain to zero.
-          uint8_t count_y0 = cell.y + 0u < cells.y ? index_count[case_y0] : 0u;
-          uint8_t count_y1 = cell.y + 1u < cells.y ? index_count[case_y1] : 0u;
-          uint8_t count_y2 = cell.y + 2u < cells.y ? index_count[case_y2] : 0u;
-          uint8_t count_y3 = cell.y + 3u < cells.y ? index_count[case_y3] : 0u;
-          uint8_t count_y4 = cell.y + 4u < cells.y ? index_count[case_y4] : 0u;
-
-          // Find sum that goes to sideband. If this is zero, there is no
-          // geometry produced in this cell, and the HP baselevel nor the
-          // array of MC cases will be touched, so no point in storing it
-          // This gives an significant speedup.
-          isum = count_y0 + count_y1 + count_y2 + count_y3 + count_y4;
-          if (isum) {
-            // MC cases and HP base level is only visited if sum is nonzero
-            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * z + thread) + 0] = case_y0;
-            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * z + thread) + 1] = case_y1;
-            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * z + thread) + 2] = case_y2;
-            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * z + thread) + 3] = case_y3;
-            index_cases_d[5 * (32 * 5 * blockIdx.x + 32 * z + thread) + 4] = case_y4;
-            out_index_level0_d[32 * 5 * blockIdx.x + 32 * z + thread] = make_uint4(count_y0,
-                                                                                   count_y0 + count_y1,
-                                                                                   count_y0 + count_y1 + count_y2,
-                                                                                   count_y0 + count_y1 + count_y2 + count_y3);
-          }
-        }
-      }
-      cell.z++;
-      // Store sideband data.
-      out_index_sideband_d[32 * (5 * blockIdx.x + z) + threadIdx.x] = isum;
-    }
-  }
-
-  // Indexed baselevel.
-  // ------------------                                                   
-
   // Fetch 32[x] x 5[y] samples from the scalar field, used for the indexed
-  // baselevel buildup. A bit more care testing for valid Y so samples outside
-  // will have a GL_CLAMP-ish behaviour, which we rely on to not produce
-  // edge intersections (which produces vertices) outside of the domiain. 
+// baselevel buildup. A bit more care testing for valid Y so samples outside
+// will have a GL_CLAMP-ish behaviour, which we rely on to not produce
+// edge intersections (which produces vertices) outside of the domiain. 
   template<typename T>
   __device__ float2 fetch2(const T* ptr, const size_t stride, const uint32_t y, const uint32_t max_y, const float t)
   {
@@ -208,7 +59,20 @@ namespace {
   // Fetch samples from scalar-field, deduce MC cases for cells, and write out
   // first level ot the HistoPyramid and sideband.
   //
-  // See comments for reduceBase
+  // Since cells needs surrounding samples, 32 samples are fetched to produce
+  // 31 cells. This wastes 1/32 of the processing, but yields pretty coalesced
+  // fetches. Profiling shows a bit too many memory transactions, which I guess
+  // is due to fetches not being aligned (first warp fetches values 0..31, next
+  // warp fetches 31...62, etc, so requests gets split).
+  //
+  // The cell grid is decomposed into chunks of 32 x 5 x 5. The last x-value is,
+  // as mentioned, discarded, so the extent is actually 31 x 5 x 5, but the
+  // full set of values are written.
+  //
+  // I have tried (RTX2080 + CUDA 11) to just let the cache system handle this
+  // and create a full set of 32 cells, but that was slower. Also tried to add
+  // extra end-fetch for the last thread to get the missing samnple for a full
+  // set of 32 cells, but that was slower as well.
   //
   // In addition to calculating the MC cell case, it also calculates the number
   // of unique vertices belong to that cell (0-3). This grid is one cell-layer
@@ -217,13 +81,13 @@ namespace {
   //
   // But this requires careful masking to avoid producing extra vertices, we
   // basically implement GL_CLAMP-behavior.
-  
+
   template<class FieldType, bool indexed>
   __device__ void reduceBaseKernel(uint8_t* __restrict__ index_case_ptr,
                                    uint4* __restrict__ out_index_level0_ptr,
                                    uint4* __restrict__ out_vertex_level0_ptr,
-                                   uint32_t* __restrict__ out_vertex_sideband_ptr,
                                    uint32_t* __restrict__ out_index_sideband_ptr,
+                                   uint32_t* __restrict__ out_vertex_sideband_ptr,
                                    const uint8_t* __restrict__   index_count,
                                    const FieldType* __restrict__ ptr,
                                    size_t field_row_stride,
@@ -258,7 +122,7 @@ namespace {
         float2 tt = make_float2(__shfl_down_sync(0xffffffff, t0.x, 1),
                                 __shfl_down_sync(0xffffffff, t0.y, 1));
 
-        if (cell.x <= grid_max_index.x && thread < 31) {
+        if ((indexed ? cell.x <= grid_max_index.x : cell.x < grid_max_index.x) && thread < 31) {
           // Merge in results from the warp shuffle. 
           uint32_t g0 = static_cast<uint32_t>(__fmaf_rn(2.f, tt.x, t0.x));
           uint32_t g1 = static_cast<uint32_t>(__fmaf_rn(2.f, tt.y, t0.y));
@@ -281,13 +145,24 @@ namespace {
           uint32_t ic_y4 = (cell.x < grid_max_index.x) && (cell.z < grid_max_index.z) && ((cell.y + 4u) < grid_max_index.y) ? index_count[case_y4] : 0u;
 
           // Look up vertex count. Set count for cells outside of domain to zero.
-          uint32_t vc_y0 = axisCountFromCase(case_y0);
-          uint32_t vc_y1 = cell.y + 1 <= grid_max_index.y ? axisCountFromCase(case_y1) : 0;
-          uint32_t vc_y2 = cell.y + 2 <= grid_max_index.y ? axisCountFromCase(case_y2) : 0;
-          uint32_t vc_y3 = cell.y + 3 <= grid_max_index.y ? axisCountFromCase(case_y3) : 0;
-          uint32_t vc_y4 = cell.y + 4 <= grid_max_index.y ? axisCountFromCase(case_y4) : 0;
+          uint32_t vc_y0, vc_y1, vc_y2, vc_y3, vc_y4;
+          if (indexed) {
+            vc_y0 = axisCountFromCase(case_y0);
+            vc_y1 = cell.y + 1 <= grid_max_index.y ? axisCountFromCase(case_y1) : 0;
+            vc_y2 = cell.y + 2 <= grid_max_index.y ? axisCountFromCase(case_y2) : 0;
+            vc_y3 = cell.y + 3 <= grid_max_index.y ? axisCountFromCase(case_y3) : 0;
+            vc_y4 = cell.y + 4 <= grid_max_index.y ? axisCountFromCase(case_y4) : 0;
+            vsum = vc_y0 + vc_y1 + vc_y2 + vc_y3 + vc_y4;
+          }
+          else {
+            vc_y0 = 0;
+            vc_y1 = 0;
+            vc_y2 = 0;
+            vc_y3 = 0;
+            vc_y4 = 0;
+            vsum = 0;
+          }
 
-          vsum = vc_y0 + vc_y1 + vc_y2 + vc_y3 + vc_y4;
           isum = ic_y0 + ic_y1 + ic_y2 + ic_y3 + ic_y4;
           if (isum | vsum) {
             index_case_ptr[5 * (32 * z) + 0] = case_y0;
@@ -300,7 +175,7 @@ namespace {
                                                       ic_y0 + ic_y1 + ic_y2,
                                                       ic_y0 + ic_y1 + ic_y2 + ic_y3);
           }
-          if (vsum) {
+          if (indexed && vsum) {
             out_vertex_level0_ptr[32 * z] = make_uint4(vc_y0,
                                                        vc_y0 + vc_y1,
                                                        vc_y0 + vc_y1 + vc_y2,
@@ -312,13 +187,55 @@ namespace {
       }
       cell.z++;
       // Store sideband data.
-      out_vertex_sideband_ptr[32 * z] = vsum;
       out_index_sideband_ptr[32 * z] = isum;
+      if (indexed) {
+        out_vertex_sideband_ptr[32 * z] = vsum;
+      }
     }
   }
 
-  
-  
+
+  template<class FieldType>
+  __global__ __launch_bounds__(32) void reduceBase(uint8_t* __restrict__           index_cases_d,
+                                                   uint4* __restrict__             out_index_level0_d,
+                                                   uint32_t* __restrict__          out_index_sideband_d,
+                                                   const uint8_t* __restrict__     index_count,
+                                                   const FieldType* __restrict__   field_d,
+                                                   const size_t                    field_row_stride,
+                                                   const size_t                    field_slice_stride,
+                                                   const float                     threshold,
+                                                   const uint3                     chunks,
+                                                   const uint3                     grid_max_index)
+  {
+    const uint32_t warp = threadIdx.x / 32;
+    const uint32_t thread = threadIdx.x % 32;
+    const uint32_t chunk_ix = blockIdx.x + warp;
+
+    uint3 chunk = make_uint3(chunk_ix % chunks.x,
+                             (chunk_ix / chunks.x) % chunks.y,
+                             (chunk_ix / chunks.x) / chunks.y);
+    uint3 cell = make_uint3(31 * chunk.x + thread,
+                            5 * chunk.y,
+                            5 * chunk.z);
+
+    reduceBaseKernel<FieldType, false>(index_cases_d        + static_cast<size_t>(5 * 32 * 5 * blockIdx.x + 5 * thread), // Index doesn't need more than 32 bits
+                                       out_index_level0_d   + static_cast<size_t>(    32 * 5 * blockIdx.x +     thread),
+                                       nullptr,
+                                       out_index_sideband_d + static_cast<size_t>(    32 * 5 * blockIdx.x +     thread),
+                                       nullptr,
+                                       index_count,
+                                       field_d + cell.z * field_slice_stride
+                                               + cell.y * field_row_stride
+                                               + min(grid_max_index.x, cell.x),
+                                       field_row_stride,
+                                       field_slice_stride,
+                                       cell,
+                                       grid_max_index,
+                                       thread,
+                                       threshold);
+
+  }
+
   template<class FieldType>
   __global__ __launch_bounds__(32) void reduceBaseIndexed(uint8_t* __restrict__           index_cases_d,
                                                           uint4* __restrict__             out_vertex_level0_d,
@@ -327,7 +244,6 @@ namespace {
                                                           uint32_t* __restrict__          out_index_sideband_d,
                                                           const uint8_t* __restrict__     index_count,
                                                           const FieldType* __restrict__   field_d,
-                                                          const FieldType* __restrict__   field_end_d,
                                                           const size_t                    field_row_stride,
                                                           const size_t                    field_slice_stride,
                                                           const float                     threshold,
@@ -347,12 +263,11 @@ namespace {
                             5 * chunk.y,
                             5 * chunk.z);
 
-    // One warp processes a 31 * 5 * 5 chunk, outputs 800 mc cases to base level and 800/5=160 sums to sideband.
     reduceBaseKernel<FieldType, true>(index_cases_d         + static_cast<size_t>(5 * 32 * 5 * blockIdx.x + 5 * thread), // Index doesn't need more than 32 bits
                                       out_index_level0_d    + static_cast<size_t>(    32 * 5 * blockIdx.x +     thread),
                                       out_vertex_level0_d   + static_cast<size_t>(    32 * 5 * blockIdx.x +     thread),
-                                      out_vertex_sideband_d + static_cast<size_t>(    32 * 5 * blockIdx.x +     thread),
                                       out_index_sideband_d  + static_cast<size_t>(    32 * 5 * blockIdx.x +     thread),
+                                      out_vertex_sideband_d + static_cast<size_t>(32 * 5 * blockIdx.x + thread),
                                       index_count,
                                       field_d + cell.z * field_slice_stride
                                               + cell.y * field_row_stride
@@ -1041,7 +956,6 @@ void ComputeStuff::MC::buildPN(Context* ctx,
                                                                            ctx->index_sidebands[0],                    // block writes 5*32 uint32's
                                                                            ctx->tables->index_count,
                                                                            field_d,
-                                                                           field_d + size_t(field_size.x) * field_size.y * field_size.z,
                                                                            size_t(field_size.x),
                                                                            size_t(field_size.x) * field_size.y,
                                                                            threshold,
@@ -1094,7 +1008,6 @@ void ComputeStuff::MC::buildPN(Context* ctx,
                                                                     ctx->index_sidebands[0],                    // block writes 5*32 uint32's
                                                                     ctx->tables->index_count,
                                                                     field_d,
-                                                                    field_d + size_t(field_size.x) * field_size.y * field_size.z,
                                                                     size_t(field_size.x),
                                                                     size_t(field_size.x) * field_size.y,
                                                                     threshold,
