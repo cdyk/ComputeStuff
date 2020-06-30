@@ -350,7 +350,7 @@ namespace {
   {
     const uint32_t offset0 = 5 * 32 * blockIdx.x + threadIdx.x;
 
-    // FIXME: Test iddea, each warp reads 32 values. read instead 32/4 uint4's.
+    // FIXME: Test idea, each warp reads 32 values. read instead 32/4 uint4's.
     __shared__ uint32_t sb[5 * 32];
     sb[threadIdx.x] = offset0 < n0 ? sb0_d[offset0] : 0;
     __syncthreads();

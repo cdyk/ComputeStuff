@@ -280,11 +280,50 @@ void main() {
     }
   }
 
-  constexpr float cayley(unsigned i, unsigned j, unsigned k, unsigned nx, unsigned ny, unsigned nz)
+  void buildTransforms(float* normal_matrix,
+                       float* modelview_projection,
+                       const int width,
+                       const int height,
+                       double seconds)
   {
-    float x = (2.f * i) / (nx - 1.f) - 1.f;
-    float y = (2.f * j) / (ny - 1.f) - 1.f;
-    float z = (2.f * k) / (nz - 1.f) - 1.f;
+    float center[16];
+    translateMatrix(center, -0.5f, -0.5f, -0.5f);
+
+    float rx[16];
+    rotMatrixX(rx, static_cast<float>(0.3 * seconds));
+
+    float ry[16];
+    rotMatrixY(ry, static_cast<float>(0.7 * seconds));
+
+    float rz[16];
+    rotMatrixZ(rz, static_cast<float>(0.5 * seconds));
+
+    float shift[16];
+    translateMatrix(shift, 0.f, 0.f, -2.0f);
+
+    float frustum[16];
+    frustumMatrix(frustum, float(width) / float(height), 1.f, 1.f, 8.f);
+
+    float rx_center[16];
+    matrixMul4(rx_center, rx, center);
+
+    float ry_rx[16];
+    matrixMul4(ry_rx, ry, rx_center);
+
+    matrixMul4(normal_matrix, rz, ry_rx);
+
+    float shift_rz_ry_rx[16];
+    matrixMul4(shift_rz_ry_rx, shift, normal_matrix);
+
+    matrixMul4(modelview_projection, frustum, shift_rz_ry_rx);
+  }
+
+
+  constexpr float cayley(unsigned i, unsigned j, unsigned k, uint3 field_size)
+  {
+    float x = (2.f * i) / (field_size.x - 1.f) - 1.f;
+    float y = (2.f * j) / (field_size.y - 1.f) - 1.f;
+    float z = (2.f * k) / (field_size.z - 1.f) - 1.f;
     float v = 1.f - 16.f * x * y * z - 4.f * (x * x + y * y + z * z);
     return v;
   }
@@ -729,40 +768,11 @@ int main(int argc, char** argv)
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     std::chrono::duration<double> elapsed = std::chrono::system_clock::now() - start;
-    auto seconds = elapsed.count();
 
-    float center[16];
-    translateMatrix(center, -0.5f, -0.5f, -0.5f);
+    float normal_matrix[16];
+    float modelview_projection[16];
+    buildTransforms(normal_matrix, modelview_projection, width, height, elapsed.count());
 
-    float rx[16];
-    rotMatrixX(rx, static_cast<float>(0.3 * seconds));
-
-    float ry[16];
-    rotMatrixY(ry, static_cast<float>(0.7 * seconds));
-
-    float rz[16];
-    rotMatrixZ(rz, static_cast<float>(0.5 * seconds));
-
-    float shift[16];
-    translateMatrix(shift, 0.f, 0.f, -2.0f);
-
-    float frustum[16];
-    frustumMatrix(frustum, float(width) / float(height), 1.f, 1.f, 8.f);
-
-    float rx_center[16];
-    matrixMul4(rx_center, rx, center);
-
-    float ry_rx[16];
-    matrixMul4(ry_rx, ry, rx_center);
-
-    float rz_ry_rx[16];
-    matrixMul4(rz_ry_rx, rz, ry_rx);
-
-    float shift_rz_ry_rx[16];
-    matrixMul4(shift_rz_ry_rx, shift, rz_ry_rx);
-
-    float frustum_shift_rz_ry_rx[16];
-    matrixMul4(frustum_shift_rz_ry_rx, frustum, shift_rz_ry_rx);
 
     glEnable(GL_DEPTH_TEST);
     glPolygonOffset(0.f, 1.f);
@@ -772,8 +782,8 @@ int main(int argc, char** argv)
     glBindVertexArray(cudaVbo);
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
     glUseProgram(simplePrg);
-    glUniformMatrix4fv(0, 1, GL_FALSE, rz_ry_rx);
-    glUniformMatrix4fv(1, 1, GL_FALSE, frustum_shift_rz_ry_rx);
+    glUniformMatrix4fv(0, 1, GL_FALSE, normal_matrix);
+    glUniformMatrix4fv(1, 1, GL_FALSE, modelview_projection);
     glUniform4f(2, 0.6f, 0.6f, 0.8f, 1.f);
     if (indexed) {
       glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, cudaIndexBuf);
@@ -788,8 +798,8 @@ int main(int argc, char** argv)
     if (wireframe) {
       glUseProgram(solidPrg);
       glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-      glUniformMatrix4fv(0, 1, GL_FALSE, rz_ry_rx);
-      glUniformMatrix4fv(1, 1, GL_FALSE, frustum_shift_rz_ry_rx);
+      glUniformMatrix4fv(0, 1, GL_FALSE, normal_matrix);
+      glUniformMatrix4fv(1, 1, GL_FALSE, modelview_projection);
       glUniform4f(2, 1.f, 1.f, 1.f, 1.f);
       if (indexed) {
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, cudaIndexBuf);
@@ -806,8 +816,8 @@ int main(int argc, char** argv)
     glBindVertexArray(wireBoxVbo);
     glUseProgram(solidPrg);
     glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-    glUniformMatrix4fv(0, 1, GL_FALSE, rz_ry_rx);
-    glUniformMatrix4fv(1, 1, GL_FALSE, frustum_shift_rz_ry_rx);
+    glUniformMatrix4fv(0, 1, GL_FALSE, normal_matrix);
+    glUniformMatrix4fv(1, 1, GL_FALSE, modelview_projection);
     glUniform4f(2, 1.f, 1.f, 1.f, 1.f);
     glDrawArrays(GL_LINES, 0, wireBoxVertexCount);
 
