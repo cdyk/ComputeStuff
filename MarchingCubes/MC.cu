@@ -671,6 +671,11 @@ namespace {
     if (ix < output_count) {
       const uint32_t* level_offset = (const uint32_t*)(pyramid);
 
+      // Down traversal is identical for three and three vertices (they belong
+      // to the same triangle). I tried (RTX2080 + CUDA11) to just do a single
+      // downtraversal and a loop over the three vertices, reducing the number
+      // of blocks by 3. But that was considerably slower, so it appears that
+      // the cache handles the downtraversal pretty well.
       hp5_result r = traverseDown(pyramid, level_offset, level_offset[15], ix);
 
       uint8_t index_case = index_cases[r.offset];
