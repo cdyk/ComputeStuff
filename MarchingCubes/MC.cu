@@ -422,11 +422,17 @@ namespace {
                                      const uint32_t input_index)
   {
     uint32_t key = input_index;
-    // Traverse apex
+    // Traverse apex, offset 
+    // 4 + 0 : sum + 3 padding
+    // 4 + 1 : 1 uvec4 of level 0.
+    // 4 + 2 : 5 values of level 0 (top)
+    // 4 + 7 : 25 values of level 1
+    // 4 + 32: total sum.
+
     uint32_t offset = 0;
-    offset = processHP5Item(key, 0, pyramid[9]);
-    offset = processHP5Item(key, 5 * offset, pyramid[10 + offset]);
-    offset = processHP5Item(key, 5 * offset, pyramid[15 + offset]);
+    offset = processHP5Item(key, 0, pyramid[4 + 1]);
+    offset = processHP5Item(key, 5 * offset, pyramid[4 + 2 + offset]);
+    offset = processHP5Item(key, 5 * offset, pyramid[4 + 7 + offset]);
     for (unsigned l = level_count - 4; 0 < l; l--) {
       offset = processHP5Item(key, 5 * offset, pyramid[level_offset[l] + offset]);
     }
@@ -724,7 +730,7 @@ namespace {
   {
     if (threadIdx.x == 0) {
       if (indexed) {
-        uint32_t vertex_count_clamped = min(vertex_capacity, vertex_pyramid[8].x);
+        uint32_t vertex_count_clamped = min(vertex_capacity, vertex_pyramid[4].x);
         // FIXME: Try to merge these two kernels as they are independent and can run on the
         //        same time.
         if (vertex_count_clamped) {
@@ -744,7 +750,7 @@ namespace {
                                                                               scale,
                                                                               threshold);
         }
-        uint32_t index_count_clamped = min(index_capacity, index_pyramid[8].x);
+        uint32_t index_count_clamped = min(index_capacity, index_pyramid[4].x);
         if(index_count_clamped) {
           extractIndices<<<(index_count_clamped + 255) / 256, 256>>>(index_output,
                                                                      vertex_pyramid,
@@ -757,7 +763,7 @@ namespace {
         }
       }
       else {
-        uint32_t vertex_count_clamped = min(vertex_capacity, index_pyramid[8].x);
+        uint32_t vertex_count_clamped = min(vertex_capacity, index_pyramid[4].x);
         if (vertex_count_clamped) {
           extractVertexPN<<<(vertex_count_clamped + 255) / 256, 256>>>(vertex_output,
                                                                        index_pyramid,
@@ -861,9 +867,9 @@ ComputeStuff::MC::Context* ComputeStuff::MC::createContext(const Tables* tables,
   }
   assert(25 < ctx->level_offsets[ctx->levels - 4]);
   assert(ctx->level_offsets[ctx->levels - 3] <= 25);
-  ctx->level_offsets[ctx->levels - 3] = 8 + 7; // up to 25 uvec4's
-  ctx->level_offsets[ctx->levels - 2] = 8 + 2; // up to 5 uvec4's
-  ctx->level_offsets[ctx->levels - 1] = 8 + 1; // one uvec4
+  ctx->level_offsets[ctx->levels - 3] = 4 + 7; // up to 25 uvec4's
+  ctx->level_offsets[ctx->levels - 2] = 4 + 2; // up to 5 uvec4's
+  ctx->level_offsets[ctx->levels - 1] = 4 + 1; // one uvec4
   ctx->level_offsets[15] = ctx->levels;         // Store # levels in top entry.
 
   size_t sideband0_size = sizeof(uint32_t) * ctx->level_sizes[0];
@@ -1003,12 +1009,12 @@ void ComputeStuff::MC::buildPN(Context* ctx,
                                                     ctx->level_sizes[i - 1]);                    // Number of sideband elements from level i-1
         sb = !sb;
       }
-      reduceApex << <1, 4 * 32, 0, stream >> > (ctx->index_pyramid + 8,
+      reduceApex << <1, 4 * 32, 0, stream >> > (ctx->index_pyramid + 4,
                                                 ctx->sum_d,
                                                 ctx->index_sidebands[sb ? 0 : 1],
                                                 ctx->level_sizes[ctx->levels - 4]);
       // FIXME: Try to combine these two kernels into one, as they are independent.
-      reduceApex << <1, 4 * 32, 0, ctx->indexStream >> > (ctx->vertex_pyramid + 8,
+      reduceApex << <1, 4 * 32, 0, ctx->indexStream >> > (ctx->vertex_pyramid + 4,
                                                 ctx->sum_d + 1,
                                                 ctx->vertex_sidebands[sb ? 0 : 1],
                                                 ctx->level_sizes[ctx->levels - 4]);
@@ -1043,7 +1049,7 @@ void ComputeStuff::MC::buildPN(Context* ctx,
                                                     ctx->level_sizes[i - 1]);                      // Number of sideband elements from level i-1
         sb = !sb;
       }
-      reduceApex << <1, 4 * 32, 0, stream >> > (ctx->index_pyramid + 8,
+      reduceApex << <1, 4 * 32, 0, stream >> > (ctx->index_pyramid + 4,
                                                 ctx->sum_d,
                                                 ctx->index_sidebands[sb ? 0 : 1],
                                                 ctx->level_sizes[ctx->levels - 4]);
