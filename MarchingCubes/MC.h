@@ -49,7 +49,7 @@ namespace ComputeStuff {
       cudaEvent_t   indexDoneEvent = 0;
       cudaEvent_t   indexExtractDoneEvent = 0;
       cudaStream_t  indexStream = 0;
-      ExtractionMode extraction_mode = ExtractionMode::DynamicParallelism;
+      ExtractionMode extraction_mode = ExtractionMode::Blocking;
       bool          indexed = false;
     };
 

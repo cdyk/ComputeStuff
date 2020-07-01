@@ -1097,8 +1097,37 @@ void ComputeStuff::MC::buildPN(Context* ctx,
   if (ctx->indexed) {
     if (vertex_buffer && index_buffer) {
       switch (ctx->extraction_mode) {
-      case ExtractionMode::Blocking:
+      case ExtractionMode::Blocking: {
+        CHECKED_CUDA(cudaStreamSynchronize(stream));
+        uint32_t vertex_count = min(vertex_capacity, ctx->sum_h[1]);
+        if (vertex_count) {
+          extractIndexedVertexPN<<<(vertex_count + 255) / 256, 256, 0, stream>>>(vertex_buffer,
+                                                                                 ctx->vertex_pyramid,
+                                                                                 field_d,
+                                                                                 ctx->index_cases_d,
+                                                                                 ctx->tables->index_table,
+                                                                                 field_row_stride,
+                                                                                 field_slice_stride,
+                                                                                 field_offset,
+                                                                                 max_field_index,
+                                                                                 vertex_capacity,
+                                                                                 make_uint2(ctx->chunks.x, ctx->chunks.y),
+                                                                                 scale,
+                                                                                 threshold);
+
+        }
+        uint32_t index_count = min(index_capacity, ctx->sum_h[0]);
+        if (index_count) {
+          extractIndices<<<(index_count + 255) / 256, 256, 0, ctx->indexStream>>>(index_buffer,
+                                                                                  ctx->vertex_pyramid,
+                                                                                  ctx->index_pyramid,
+                                                                                  ctx->index_cases_d,
+                                                                                  ctx->tables->index_table,
+                                                                                  index_capacity,
+                                                                                  make_uint2(ctx->chunks.x, ctx->chunks.y));
+        }
         break;
+      }
       case ExtractionMode::DynamicParallelism:
         launchExtractIndexedVertexPN<<<1, 32, 0, stream>>>(vertex_buffer,
                                                            ctx->vertex_pyramid,
@@ -1122,22 +1151,39 @@ void ComputeStuff::MC::buildPN(Context* ctx,
                                                              index_capacity,
                                                              make_uint2(ctx->chunks.x, ctx->chunks.y),
                                                              alwaysExtract);
-
-        CHECKED_CUDA(cudaEventRecord(ctx->indexExtractDoneEvent, ctx->indexStream));
-        CHECKED_CUDA(cudaStreamWaitEvent(stream, ctx->indexExtractDoneEvent, 0));
         break;
       default:
         assert(false && "Unhandled extraction mode");
         break;
       }
+      CHECKED_CUDA(cudaEventRecord(ctx->indexExtractDoneEvent, ctx->indexStream));
+      CHECKED_CUDA(cudaStreamWaitEvent(stream, ctx->indexExtractDoneEvent, 0));
     }
 
   }
   else {
     if (vertex_buffer) {
       switch (ctx->extraction_mode) {
-      case ExtractionMode::Blocking:
+      case ExtractionMode::Blocking: {
+        CHECKED_CUDA(cudaStreamSynchronize(stream));
+        uint32_t vertex_count = min(vertex_capacity, ctx->sum_h[0]);
+        if (vertex_count) {
+          extractVertexPN<<<(vertex_count + 255) / 256, 256, 0, stream>>>(vertex_buffer,
+                                                                          ctx->index_pyramid,
+                                                                          field_d,
+                                                                          ctx->index_cases_d,
+                                                                          ctx->tables->index_table,
+                                                                          field_row_stride,
+                                                                          field_slice_stride,
+                                                                          field_offset,
+                                                                          max_field_index,
+                                                                          vertex_capacity,
+                                                                          make_uint2(ctx->chunks.x, ctx->chunks.y),
+                                                                          scale,
+                                                                          threshold);
+        }
         break;
+      }
       case ExtractionMode::DynamicParallelism:
         launchExtractVertexPN<<<1, 32, 0, stream>>>(vertex_buffer,
                                                     ctx->index_pyramid,
