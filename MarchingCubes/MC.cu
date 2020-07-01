@@ -436,7 +436,7 @@ namespace {
     for (unsigned l = level_count - 4; 0 < l; l--) {
       offset = processHP5Item(key, 5 * offset, pyramid[level_offset[l] + offset]);
     }
-    uchar4 b = ((const uchar4*)(pyramid + level_offset[0]))[offset];
+    uchar4 b = ((const uchar4*)(pyramid + 4 + 32))[offset];
     offset = processHP5Item(key, 5 * offset, make_uint4(b.x, b.y, b.z, b.w));
     return { offset, key };
   }
@@ -621,6 +621,12 @@ namespace {
       uint32_t vertex_cell_case = index_cases[vertex_offset];
       uint32_t axes = piercingAxesFromCase(vertex_cell_case);
 
+      // Traverse apex, offset 
+      // 4 + 0 : sum + 3 padding
+      // 4 + 1 : 1 uvec4 of level 0.
+      // 4 + 2 : 5 values of level 0 (top)
+      // 4 + 7 : 25 values of level 1
+      // 4 + 32: total sum.
       int32_t vertex_index = 0;
       { // base level is uchar4, needs special treatment.
         uint32_t rem = vertex_offset % 5;
@@ -631,7 +637,7 @@ namespace {
         else if (rem == 3) vertex_index += item.z;
         else if (rem == 4) vertex_index += item.w;
       }
-      for (unsigned l = 1; l < level_count; l++) {
+      for (unsigned l = 1; l + 1 < level_count; l++) {
         uint32_t rem = vertex_offset % 5;
         vertex_offset = vertex_offset / 5;
         uint4 item = vertex_pyramid[level_offset[l] + vertex_offset];
@@ -639,6 +645,13 @@ namespace {
         else if (rem == 2) vertex_index += item.y;
         else if (rem == 3) vertex_index += item.z;
         else if (rem == 4) vertex_index += item.w;
+      }
+      { // Top level, vertex offset is now in range 0..4
+        uint4 item = vertex_pyramid[4 + 1];
+        if (vertex_offset == 1) vertex_index += item.x;
+        else if (vertex_offset == 2) vertex_index += item.y;
+        else if (vertex_offset == 3) vertex_index += item.z;
+        else if (vertex_offset == 4) vertex_index += item.w;
       }
 
       if (index_code & 0b001) {     // Vertex is on x-axis
