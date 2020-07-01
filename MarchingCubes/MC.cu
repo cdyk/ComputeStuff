@@ -84,8 +84,8 @@ namespace {
 
   template<class FieldType, bool indexed>
   __device__ void reduceBaseKernel(uint8_t* __restrict__ index_case_ptr,
-                                   uint4* __restrict__ out_index_level0_ptr,
-                                   uint4* __restrict__ out_vertex_level0_ptr,
+                                   uchar4* __restrict__ out_index_level0_ptr,
+                                   uchar4* __restrict__ out_vertex_level0_ptr,
                                    uint32_t* __restrict__ out_index_sideband_ptr,
                                    uint32_t* __restrict__ out_vertex_sideband_ptr,
                                    const uint8_t* __restrict__   index_count,
@@ -170,16 +170,16 @@ namespace {
             index_case_ptr[5 * (32 * z) + 2] = case_y2;
             index_case_ptr[5 * (32 * z) + 3] = case_y3;
             index_case_ptr[5 * (32 * z) + 4] = case_y4;
-            out_index_level0_ptr[32 * z] = make_uint4(ic_y0,
-                                                      ic_y0 + ic_y1,
-                                                      ic_y0 + ic_y1 + ic_y2,
-                                                      ic_y0 + ic_y1 + ic_y2 + ic_y3);
+            out_index_level0_ptr[32 * z] = make_uchar4(ic_y0,
+                                                       ic_y0 + ic_y1,
+                                                       ic_y0 + ic_y1 + ic_y2,
+                                                       ic_y0 + ic_y1 + ic_y2 + ic_y3);
           }
           if (indexed && vsum) {
-            out_vertex_level0_ptr[32 * z] = make_uint4(vc_y0,
-                                                       vc_y0 + vc_y1,
-                                                       vc_y0 + vc_y1 + vc_y2,
-                                                       vc_y0 + vc_y1 + vc_y2 + vc_y3);
+            out_vertex_level0_ptr[32 * z] = make_uchar4(vc_y0,
+                                                        vc_y0 + vc_y1,
+                                                        vc_y0 + vc_y1 + vc_y2,
+                                                        vc_y0 + vc_y1 + vc_y2 + vc_y3);
 
           }
 
@@ -197,7 +197,7 @@ namespace {
 
   template<class FieldType>
   __global__ __launch_bounds__(32) void reduceBase(uint8_t* __restrict__           index_cases_d,
-                                                   uint4* __restrict__             out_index_level0_d,
+                                                   uchar4* __restrict__            out_index_level0_d,
                                                    uint32_t* __restrict__          out_index_sideband_d,
                                                    const uint8_t* __restrict__     index_count,
                                                    const FieldType* __restrict__   field_d,
@@ -238,9 +238,9 @@ namespace {
 
   template<class FieldType>
   __global__ __launch_bounds__(32) void reduceBaseIndexed(uint8_t* __restrict__           index_cases_d,
-                                                          uint4* __restrict__             out_vertex_level0_d,
+                                                          uchar4* __restrict__            out_vertex_level0_d,
                                                           uint32_t* __restrict__          out_vertex_sideband_d,
-                                                          uint4* __restrict__             out_index_level0_d,
+                                                          uchar4* __restrict__            out_index_level0_d,
                                                           uint32_t* __restrict__          out_index_sideband_d,
                                                           const uint8_t* __restrict__     index_count,
                                                           const FieldType* __restrict__   field_d,
@@ -427,9 +427,11 @@ namespace {
     offset = processHP5Item(key, 0, pyramid[9]);
     offset = processHP5Item(key, 5 * offset, pyramid[10 + offset]);
     offset = processHP5Item(key, 5 * offset, pyramid[15 + offset]);
-    for (unsigned l = level_count - 4; l < level_count; l--) {
+    for (unsigned l = level_count - 4; 0 < l; l--) {
       offset = processHP5Item(key, 5 * offset, pyramid[level_offset[l] + offset]);
     }
+    uchar4 b = ((const uchar4*)(pyramid + level_offset[0]))[offset];
+    offset = processHP5Item(key, 5 * offset, make_uint4(b.x, b.y, b.z, b.w));
     return { offset, key };
   }
 
@@ -614,7 +616,16 @@ namespace {
       uint32_t axes = piercingAxesFromCase(vertex_cell_case);
 
       int32_t vertex_index = 0;
-      for (unsigned l = 0; l < level_count; l++) {
+      { // base level is uchar4, needs special treatment.
+        uint32_t rem = vertex_offset % 5;
+        vertex_offset = vertex_offset / 5;
+        uchar4 item = ((const uchar4*)(vertex_pyramid + level_offset[0]))[vertex_offset];
+        if (rem == 1) vertex_index += item.x;
+        else if (rem == 2) vertex_index += item.y;
+        else if (rem == 3) vertex_index += item.z;
+        else if (rem == 4) vertex_index += item.w;
+      }
+      for (unsigned l = 1; l < level_count; l++) {
         uint32_t rem = vertex_offset % 5;
         vertex_offset = vertex_offset / 5;
         uint4 item = vertex_pyramid[level_offset[l] + vertex_offset];
@@ -835,7 +846,8 @@ ComputeStuff::MC::Context* ComputeStuff::MC::createContext(const Tables* tables,
   ctx->level_offsets[0] = 4 + 32; // First, level offsets (16 uint32's = 4 uvec4's), then pyramid apex (32 uvec4's).
   for (unsigned l = 1; l < ctx->levels - 3; l++) {
     ctx->level_sizes[l] = (ctx->level_sizes[l - 1] + 4) / 5;
-    ctx->level_offsets[l] = ctx->level_offsets[l - 1] + ctx->level_sizes[l - 1];
+    uint32_t prev_level_size = l == 1 ? (ctx->level_sizes[0] + 3) / 4 : ctx->level_sizes[0];  // Base-level is only uchar4.
+    ctx->level_offsets[l] = ctx->level_offsets[l - 1] + prev_level_size;
   }
   ctx->total_size = ctx->level_offsets[ctx->levels - 4] + ctx->level_sizes[ctx->levels - 4];
 
@@ -950,9 +962,9 @@ void ComputeStuff::MC::buildPN(Context* ctx,
       // FIXME: Try to add extra reduction passes on the tail of this kernel (2 or 3 levels in one go
       //        have worked well before) and see if that reduces memory pressure.
       ::reduceBaseIndexed<float> << <ctx->chunk_total, 32, 0, stream >> > (ctx->index_cases_d,                   // block writes 5*5*32=800 uint8's
-                                                                           ctx->vertex_pyramid + ctx->level_offsets[0], // block writes 5*32 uvec4's
+                                                                           (uchar4*)(ctx->vertex_pyramid + ctx->level_offsets[0]), // block writes 5*32 uvec4's
                                                                            ctx->vertex_sidebands[0],                    // block writes 5*32 uint32's
-                                                                           ctx->index_pyramid + ctx->level_offsets[0], // block writes 5*32 uvec4's
+                                                                           (uchar4*)(ctx->index_pyramid + ctx->level_offsets[0]), // block writes 5*32 uvec4's
                                                                            ctx->index_sidebands[0],                    // block writes 5*32 uint32's
                                                                            ctx->tables->index_count,
                                                                            field_d,
@@ -1004,7 +1016,7 @@ void ComputeStuff::MC::buildPN(Context* ctx,
     // Non-indexed pyramid buildup
     else {
       ::reduceBase<float> << <ctx->chunk_total, 32, 0, stream >> > (ctx->index_cases_d,                   // block writes 5*5*32=800 uint8's
-                                                                    ctx->index_pyramid + ctx->level_offsets[0], // block writes 5*32 uvec4's
+                                                                    (uchar4*)(ctx->index_pyramid + ctx->level_offsets[0]), // block writes 5*32 uvec4's
                                                                     ctx->index_sidebands[0],                    // block writes 5*32 uint32's
                                                                     ctx->tables->index_count,
                                                                     field_d,
