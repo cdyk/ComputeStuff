@@ -17,6 +17,12 @@ namespace ComputeStuff {
       const uint8_t* index_table = nullptr;
     };
 
+    enum struct ExtractionMode
+    {
+      Blocking,
+      DynamicParallelism
+    };
+
     struct Context
     {
       const Tables* tables = nullptr;
@@ -41,7 +47,9 @@ namespace ComputeStuff {
 
       cudaEvent_t   baseEvent = 0;
       cudaEvent_t   indexDoneEvent = 0;
+      cudaEvent_t   indexExtractDoneEvent = 0;
       cudaStream_t  indexStream = 0;
+      ExtractionMode extraction_mode = ExtractionMode::DynamicParallelism;
       bool          indexed = false;
     };
 

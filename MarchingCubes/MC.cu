@@ -568,12 +568,47 @@ namespace {
     }
   }
 
-   __global__ void extractIndices(uint32_t* __restrict__       indices,
+  __global__ void launchExtractIndexedVertexPN(float* __restrict__          vertex_output,
+                                               const uint4* __restrict__    vertex_pyramid,
+                                               const float* __restrict__    field,
+                                               const uint8_t* __restrict__  index_cases,
+                                               const uint8_t* __restrict__  index_table,
+                                               const size_t                 field_row_stride,
+                                               const size_t                 field_slice_stride,
+                                               const uint3                  field_offset,
+                                               const uint3                  field_max_index,
+                                               const uint32_t               vertex_capacity,
+                                               const uint2                  chunks,
+                                               const float3                 scale,
+                                               const float                  threshold,
+                                               const bool                   always_extract)
+  {
+    if (threadIdx.x == 0) {
+      uint32_t vertex_count_clamped = min(vertex_capacity, vertex_pyramid[4].x);
+
+      if (vertex_count_clamped) {
+        extractIndexedVertexPN<<<(vertex_count_clamped + 255) / 256, 256>>>(vertex_output,
+                                                                            vertex_pyramid,
+                                                                            field,
+                                                                            index_cases,
+                                                                            index_table,
+                                                                            field_row_stride,
+                                                                            field_slice_stride,
+                                                                            field_offset,
+                                                                            field_max_index,
+                                                                            vertex_count_clamped,
+                                                                            chunks,
+                                                                            scale,
+                                                                            threshold);
+      }
+    }
+  }
+
+  __global__ void extractIndices(uint32_t* __restrict__       indices,
                                   const uint4* __restrict__    vertex_pyramid,
                                   const uint4* __restrict__    index_pyramid,
                                   const uint8_t* __restrict__  index_cases,
                                   const uint8_t* __restrict__  index_table,
-                                  const uint3                  full_grid_size,  // Full size, including padding.
                                   const uint32_t               output_count,
                                   const uint2                  chunks)
   {
@@ -670,6 +705,29 @@ namespace {
     }
   }
 
+  __global__ void launchExtractIndices(uint32_t* __restrict__       index_output,
+                                       const uint4* __restrict__    vertex_pyramid,
+                                       const uint4* __restrict__    index_pyramid,
+                                       const uint8_t* __restrict__  index_cases,
+                                       const uint8_t* __restrict__  index_table,
+                                       const uint32_t               index_capacity,
+                                       const uint2                  chunks,
+                                       const bool                   always_extract)
+  {
+    if (threadIdx.x == 0) {
+      uint32_t index_count_clamped = min(index_capacity, index_pyramid[4].x);
+      if (index_count_clamped) {
+        extractIndices<<<(index_count_clamped + 255) / 256, 256>>>(index_output,
+                                                                   vertex_pyramid,
+                                                                   index_pyramid,
+                                                                   index_cases,
+                                                                   index_table,
+                                                                   index_count_clamped,
+                                                                   chunks);
+      }
+    }
+  }
+
 
   __global__ void extractVertexPN(float* __restrict__          output,
                                   const uint4* __restrict__    pyramid,
@@ -722,82 +780,40 @@ namespace {
     }
   }
 
-  __global__ void runExtractionPN(float* __restrict__          vertex_output,
-                                  uint32_t* __restrict__       index_output,
-                                  const uint4* __restrict__    vertex_pyramid,
-                                  const uint4* __restrict__    index_pyramid,
-                                  const float* __restrict__    field,
-                                  const uint8_t* __restrict__  index_cases,
-                                  const uint8_t* __restrict__  index_table,
-                                  const size_t                 field_row_stride,
-                                  const size_t                 field_slice_stride,
-                                  const uint3                  field_offset,
-                                  const uint3                  field_size,
-                                  const uint32_t               vertex_capacity,
-                                  const uint32_t               index_capacity,
-                                  const uint2                  chunks,
-                                  const float3                 scale,
-                                  const float                  threshold,
-                                  bool                         alwaysExtract,
-                                  bool                         indexed)
+  __global__ void launchExtractVertexPN(float* __restrict__          vertex_output,
+                                        const uint4* __restrict__    index_pyramid,
+                                        const float* __restrict__    field,
+                                        const uint8_t* __restrict__  index_cases,
+                                        const uint8_t* __restrict__  index_table,
+                                        const size_t                 field_row_stride,
+                                        const size_t                 field_slice_stride,
+                                        const uint3                  field_offset,
+                                        const uint3                  field_max_index,
+                                        const uint32_t               vertex_capacity,
+                                        const uint2                  chunks,
+                                        const float3                 scale,
+                                        const float                  threshold,
+                                        const bool                   always_extract)
   {
     if (threadIdx.x == 0) {
-      if (indexed) {
-        uint32_t vertex_count_clamped = min(vertex_capacity, vertex_pyramid[4].x);
-        // FIXME: Try to merge these two kernels as they are independent and can run on the
-        //        same time.
-        if (vertex_count_clamped) {
-          extractIndexedVertexPN<<<(vertex_count_clamped + 255) / 256, 256>>>(vertex_output,
-                                                                              vertex_pyramid,
-                                                                              field,
-                                                                              index_cases,
-                                                                              index_table,
-                                                                              field_row_stride,
-                                                                              field_slice_stride,
-                                                                              field_offset,
-                                                                              make_uint3(field_size.x - 1,
-                                                                                         field_size.y - 1,
-                                                                                         field_size.z - 1),
-                                                                              vertex_count_clamped,
-                                                                              chunks,
-                                                                              scale,
-                                                                              threshold);
-        }
-        uint32_t index_count_clamped = min(index_capacity, index_pyramid[4].x);
-        if(index_count_clamped) {
-          extractIndices<<<(index_count_clamped + 255) / 256, 256>>>(index_output,
-                                                                     vertex_pyramid,
-                                                                     index_pyramid,
-                                                                     index_cases,
-                                                                     index_table,
-                                                                     make_uint3(0, 0, 0),
-                                                                     index_count_clamped,
-                                                                     chunks);
-        }
-      }
-      else {
-        uint32_t vertex_count_clamped = min(vertex_capacity, index_pyramid[4].x);
-        if (vertex_count_clamped) {
-          extractVertexPN<<<(vertex_count_clamped + 255) / 256, 256>>>(vertex_output,
-                                                                       index_pyramid,
-                                                                       field,
-                                                                       index_cases,
-                                                                       index_table,
-                                                                       field_row_stride,
-                                                                       field_slice_stride,
-                                                                       field_offset,
-                                                                       make_uint3(field_size.x - 1,
-                                                                                  field_size.y - 1,
-                                                                                  field_size.z - 1),
-                                                                       vertex_count_clamped,
-                                                                       chunks,
-                                                                       scale,
-                                                                       threshold);
-        }
+      uint32_t vertex_count_clamped = min(vertex_capacity, index_pyramid[4].x);
+      if (vertex_count_clamped) {
+        extractVertexPN << <(vertex_count_clamped + 255) / 256, 256 >> > (vertex_output,
+                                                                          index_pyramid,
+                                                                          field,
+                                                                          index_cases,
+                                                                          index_table,
+                                                                          field_row_stride,
+                                                                          field_slice_stride,
+                                                                          field_offset,
+                                                                          field_max_index,
+                                                                          vertex_count_clamped,
+                                                                          chunks,
+                                                                          scale,
+                                                                          threshold);
       }
     }
   }
-
 
 #define CHECKED_CUDA(a) do { cudaError_t error = (a); if(error != cudaSuccess) handleCudaError(error, __FILE__, __LINE__); } while(0)
   [[noreturn]]
@@ -904,6 +920,7 @@ ComputeStuff::MC::Context* ComputeStuff::MC::createContext(const Tables* tables,
     CHECKED_CUDA(cudaStreamCreateWithFlags(&ctx->indexStream, cudaStreamNonBlocking));
     CHECKED_CUDA(cudaEventCreateWithFlags(&ctx->baseEvent, cudaEventDisableTiming));
     CHECKED_CUDA(cudaEventCreateWithFlags(&ctx->indexDoneEvent, cudaEventDisableTiming));
+    CHECKED_CUDA(cudaEventCreateWithFlags(&ctx->indexExtractDoneEvent, cudaEventDisableTiming));
 
     CHECKED_CUDA(cudaMalloc(&ctx->vertex_cases_d, sizeof(uint32_t) * 800 * ctx->chunk_total));
     CHECKED_CUDA(cudaMalloc(&ctx->vertex_pyramid, sizeof(uint4) * ctx->total_size));
@@ -1069,26 +1086,79 @@ void ComputeStuff::MC::buildPN(Context* ctx,
     }
 
   }
-  if (vertex_buffer) {
-    ::runExtractionPN<<<1, 32, 0, stream>>>(vertex_buffer,
-                                            index_buffer,
-                                            ctx->vertex_pyramid,
-                                            ctx->index_pyramid,
-                                            field_d,
-                                            ctx->index_cases_d,
-                                            ctx->tables->index_table,
-                                            field_row_stride,
-                                            field_slice_stride,
-                                            field_offset,
-                                            field_size,
-                                            static_cast<uint32_t>(vertex_buffer_bytesize / (6 * sizeof(float))),
-                                            static_cast<uint32_t>(index_buffer_bytesize / sizeof(uint32_t)),
-                                            make_uint2(ctx->chunks.x, ctx->chunks.y),
-                                            make_float3(1.f / field_size.x,
-                                                        1.f / field_size.y,
-                                                        1.f / field_size.z),
-                                            threshold,
-                                            alwaysExtract,
-                                            ctx->indexed);
+  const auto vertex_capacity = static_cast<uint32_t>(vertex_buffer_bytesize / (6 * sizeof(float)));
+  const auto index_capacity = static_cast<uint32_t>(index_buffer_bytesize / sizeof(uint32_t));
+  const auto max_field_index = make_uint3(field_size.x - 1,
+                                          field_size.y - 1,
+                                          field_size.z - 1);
+  const auto scale = make_float3(1.f / field_size.x,
+                                 1.f / field_size.y,
+                                 1.f / field_size.z);
+  if (ctx->indexed) {
+    if (vertex_buffer && index_buffer) {
+      switch (ctx->extraction_mode) {
+      case ExtractionMode::Blocking:
+        break;
+      case ExtractionMode::DynamicParallelism:
+        launchExtractIndexedVertexPN<<<1, 32, 0, stream>>>(vertex_buffer,
+                                                           ctx->vertex_pyramid,
+                                                           field_d,
+                                                           ctx->index_cases_d,
+                                                           ctx->tables->index_table,
+                                                           field_row_stride,
+                                                           field_slice_stride,
+                                                           field_offset,
+                                                           max_field_index,
+                                                           vertex_capacity,
+                                                           make_uint2(ctx->chunks.x, ctx->chunks.y),
+                                                           scale,
+                                                           threshold,
+                                                           alwaysExtract);
+        launchExtractIndices<<<1, 32, 0, ctx->indexStream>>>(index_buffer,
+                                                             ctx->vertex_pyramid,
+                                                             ctx->index_pyramid,
+                                                             ctx->index_cases_d,
+                                                             ctx->tables->index_table,
+                                                             index_capacity,
+                                                             make_uint2(ctx->chunks.x, ctx->chunks.y),
+                                                             alwaysExtract);
+
+        CHECKED_CUDA(cudaEventRecord(ctx->indexExtractDoneEvent, ctx->indexStream));
+        CHECKED_CUDA(cudaStreamWaitEvent(stream, ctx->indexExtractDoneEvent, 0));
+        break;
+      default:
+        assert(false && "Unhandled extraction mode");
+        break;
+      }
+    }
+
   }
+  else {
+    if (vertex_buffer) {
+      switch (ctx->extraction_mode) {
+      case ExtractionMode::Blocking:
+        break;
+      case ExtractionMode::DynamicParallelism:
+        launchExtractVertexPN<<<1, 32, 0, stream>>>(vertex_buffer,
+                                                    ctx->index_pyramid,
+                                                    field_d,
+                                                    ctx->index_cases_d,
+                                                    ctx->tables->index_table,
+                                                    field_row_stride,
+                                                    field_slice_stride,
+                                                    field_offset,
+                                                    max_field_index,
+                                                    vertex_capacity,
+                                                    make_uint2(ctx->chunks.x, ctx->chunks.y),
+                                                    scale,
+                                                    threshold,
+                                                    alwaysExtract);
+        break;
+      default:
+        assert(false && "Unhandled extraction mode");
+        break;
+      }
+    }
+  }
+
 }
