@@ -412,15 +412,16 @@ namespace {
     const uint32_t warp = threadIdx.x / 32;
     const uint32_t thread = threadIdx.x % 32;
     const uint32_t chunk_ix = blockIdx.x;
-
-    // Figure out which chunk we are in.
-    // FIXME: Try to use grid extents to mach chunk grid to avoid all these modulo/divisions.
     uint3 chunk = make_uint3(chunk_ix % chunks.x,
                              (chunk_ix / chunks.x) % chunks.y,
                              (chunk_ix / chunks.x) / chunks.y);
     uint3 cell = make_uint3(31 * chunk.x + thread,
                             5 * chunk.y,
                             5 * chunk.z);
+
+    const FieldType* __restrict__ field_cell_d = field_d + (min(grid_max_index.z, cell.z) * field_slice_stride +
+                                                            min(grid_max_index.y, cell.y) * field_row_stride +
+                                                            min(grid_max_index.x, cell.x));
 
     __shared__ float shmem[32 * 6 * 2];
 
@@ -431,9 +432,7 @@ namespace {
                                                       out_vertex_sideband_d + static_cast<size_t>(32 * 5 * blockIdx.x + thread),
                                                       shmem,
                                                       index_count,
-                                                      field_d + cell.z * field_slice_stride
-                                                      + cell.y * field_row_stride
-                                                      + min(grid_max_index.x, cell.x),
+                                                      field_cell_d,
                                                       field_row_stride,
                                                       field_slice_stride,
                                                       cell,
@@ -476,9 +475,9 @@ namespace {
     __shared__ float shmem[32 * 6 * 2];
     __shared__ uint32_t vtx_sideband[6 * 32]; // If we sync in reduceBaseKernel after fetching adjacent Z, we can recycle shmem
     __shared__ uint32_t idx_sideband[6 * 32];
-    reduceBaseKernelMultiWarp<FieldType, true, false>(index_cases_d + static_cast<size_t>(5 * 32 * 5 * blockIdx.x + 5 * thread), // Index doesn't need more than 32 bits
-                                                      out_index_level0_d + static_cast<size_t>(32 * 5 * blockIdx.x + thread),
-                                                      out_vertex_level0_d + static_cast<size_t>(32 * 5 * blockIdx.x + thread),
+    reduceBaseKernelMultiWarp<FieldType, true, false>(index_cases_d       + static_cast<size_t>(5 * (32 * 5 * blockIdx.x + thread) ),
+                                                      out_index_level0_d  + static_cast<size_t>(     32 * 5 * blockIdx.x + thread  ),
+                                                      out_vertex_level0_d + static_cast<size_t>(     32 * 5 * blockIdx.x + thread  ),
                                                       idx_sideband + thread,
                                                       vtx_sideband + thread,
                                                       shmem,
@@ -516,9 +515,122 @@ namespace {
         sbo[offset1] = sum;
       }
     }
-
   }
 
+  __device__ __forceinline__ void reductionStep(uint4* __restrict__ hpo,
+                                                uint32_t* __restrict__ sbo,
+                                                const uint32_t* __restrict__ sbi,
+                                                const bool mask_sideband,
+                                                const bool not_masked)
+  {
+    uint32_t sum = 0;
+    if (not_masked) {
+      uint4 hp = make_uint4(sbi[0], sbi[1], sbi[2], sbi[3]);
+      sum = hp.x + hp.y + hp.z + hp.w + sbi[4];
+      if (sum) {
+        *hpo = make_uint4(hp.x,
+                          hp.x + hp.y,
+                          hp.x + hp.y + hp.z,
+                          hp.x + hp.y + hp.z + hp.w);
+      }
+    }
+    if (!mask_sideband || not_masked) {
+      *sbo = sum;
+    }
+  }
+
+
+  template<class FieldType>
+  __global__ __launch_bounds__(32 * 5) void reduceBaseIndexed3(uint8_t* __restrict__           index_cases_d,
+                                                               uchar4* __restrict__            vtx_outlevel0_d,
+                                                               uint4* __restrict__             vtx_outlevel1_d,
+                                                               uint4* __restrict__             vtx_outlevel2_d,
+                                                               uint32_t* __restrict__          vtx_sideband2_d,
+                                                               uchar4* __restrict__            idx_outlevel0_d,
+                                                               uint4* __restrict__             idx_outlevel1_d,
+                                                               uint4* __restrict__             idx_outlevel2_d,
+                                                               uint32_t* __restrict__          idx_sideband2_d,
+                                                               const uint8_t* __restrict__     index_count_table_d,
+                                                               const FieldType* __restrict__   field_d,
+                                                               const size_t                    field_row_stride,
+                                                               const size_t                    field_slice_stride,
+                                                               const float                     threshold,
+                                                               const uint3                     chunks,
+                                                               const uint32_t                  chunk_count,
+                                                               const uint32_t                  n1,
+                                                               const uint32_t                  n2,
+                                                               const uint3                     grid_max_index)
+  {
+    const uint32_t warp = threadIdx.x / 32;
+    const uint32_t thread = threadIdx.x % 32;
+    const uint32_t chunk_ix = 5 * blockIdx.x + warp;
+    uint3 chunk = make_uint3(chunk_ix % chunks.x,
+                             (chunk_ix / chunks.x) % chunks.y,
+                             (chunk_ix / chunks.x) / chunks.y);
+    uint3 cell = make_uint3(31 * chunk.x + thread,
+                            5 * chunk.y,
+                            5 * chunk.z);
+    const FieldType* __restrict__ field_cell_d = field_d + (min(grid_max_index.z, cell.z) * field_slice_stride +
+                                                            min(grid_max_index.y, cell.y) * field_row_stride +
+                                                            min(grid_max_index.x, cell.x));
+
+    // Base level, process 5[warp] * 800 cells.
+    // Write 5*5*32 uvec4 and sideband values
+    __shared__ uint32_t vtx_sideband0_s[5 * 5 * 32];
+    __shared__ uint32_t idx_sideband0_s[5 * 5 * 32];
+    if (chunk_ix < chunk_count) {
+      const uint32_t off_s = 32 * 5 * warp + thread;
+      const uint32_t off_d = 32 * 5 * chunk_ix + thread;
+      reduceBaseKernel<FieldType, true>(index_cases_d   + 5 * off_d,
+                                        idx_outlevel0_d +     off_d,
+                                        vtx_outlevel0_d +     off_d,
+                                        idx_sideband0_s +     off_s,
+                                        vtx_sideband0_s +     off_s,
+                                        index_count_table_d,
+                                        field_cell_d,
+                                        field_row_stride,
+                                        field_slice_stride,
+                                        cell,
+                                        grid_max_index,
+                                        thread,
+                                        threshold);
+    }
+    else {
+      for (unsigned k = 0; k < 5; k++) {
+        idx_sideband0_s[32 * (5 * warp + k) + thread] = 0;
+        vtx_sideband0_s[32 * (5 * warp + k) + thread] = 0;
+      }
+    }
+
+    // Reduction into level 1, read 5*5*32 sideband values, write 5*32 uvec4 and sideband values
+    __shared__ uint32_t vtx_sideband1_s[5 * 32];
+    __shared__ uint32_t idx_sideband1_s[5 * 32];
+    {
+      const uint32_t off_s = 32 * warp + thread;
+      const uint32_t off_d = 32 * chunk_ix + thread;
+      reductionStep(idx_outlevel1_d +     off_d,
+                    idx_sideband1_s +     off_s,
+                    idx_sideband0_s + 5 * off_s,
+                    false,                off_d < n1);
+
+      reductionStep(vtx_outlevel1_d +     off_d,
+                    vtx_sideband1_s +     off_s,
+                    vtx_sideband0_s + 5 * off_s,
+                    false,                off_d < n1);
+    }
+    __syncthreads();
+
+    // Reduction into level 2, read 5*32 values, write 32 uvec4 and sideband values
+    if (warp <2) {
+      uint32_t off_s = thread;
+      uint32_t off_d = 32 * blockIdx.x + thread;
+      reductionStep((warp == 0 ? idx_outlevel2_d : vtx_outlevel2_d) +     off_d,
+                    (warp == 0 ? idx_sideband2_d : vtx_sideband2_d) +     off_d,
+                    (warp == 0 ? idx_sideband1_s : vtx_sideband1_s) + 5 * off_s,
+                    true,                                                 off_d < n2);
+    }
+
+  }
 
 
 
@@ -706,6 +818,31 @@ void ComputeStuff::MC::Internal::buildPyramid(Context* ctx,
                                                          ctx->level_sizes[0],
                                                          ctx->level_sizes[1],
                                                          grid_max_index);
+      break;
+    }
+    case BaseLevelBuildMode::TripleLevelSingleWarp: {
+      uint32_t bn = (ctx->level_sizes[2] + 31) / 32;
+      uint32_t tn = 32 * 5;
+      next_level = 3;
+      reduceBaseIndexed3 << <bn, tn, 0, stream >> > (ctx->index_cases_d,
+                                                     (uchar4*)(ctx->vertex_pyramid + ctx->level_offsets[0]),
+                                                     ctx->vertex_pyramid + ctx->level_offsets[1],
+                                                     ctx->vertex_pyramid + ctx->level_offsets[2],
+                                                     ctx->vertex_sidebands[0],
+                                                     (uchar4*)(ctx->index_pyramid + ctx->level_offsets[0]),
+                                                     ctx->index_pyramid + ctx->level_offsets[1],
+                                                     ctx->index_pyramid + ctx->level_offsets[2],
+                                                     ctx->index_sidebands[0],
+                                                     ctx->tables->index_count,
+                                                     field_d,
+                                                     size_t(field_size.x),
+                                                     size_t(field_size.x) * field_size.y,
+                                                     threshold,
+                                                     ctx->chunks,
+                                                     ctx->chunk_total,
+                                                     ctx->level_sizes[1],
+                                                     ctx->level_sizes[2],
+                                                     grid_max_index);
       break;
     }
     default:
