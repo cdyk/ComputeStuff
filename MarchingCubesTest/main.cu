@@ -1056,8 +1056,6 @@ int main(int argc, char** argv)
         cuda_ms = 0.f;
       }
     }
-
-
   }
   glfwDestroyWindow(win);
   glfwTerminate();

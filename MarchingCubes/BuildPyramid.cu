@@ -540,26 +540,26 @@ namespace {
   }
 
 
-  template<class FieldType>
-  __global__ __launch_bounds__(32 * 5) void reduceBaseIndexed3(uint8_t* __restrict__           index_cases_d,
-                                                               uchar4* __restrict__            vtx_outlevel0_d,
-                                                               uint4* __restrict__             vtx_outlevel1_d,
-                                                               uint4* __restrict__             vtx_outlevel2_d,
-                                                               uint32_t* __restrict__          vtx_sideband2_d,
-                                                               uchar4* __restrict__            idx_outlevel0_d,
-                                                               uint4* __restrict__             idx_outlevel1_d,
-                                                               uint4* __restrict__             idx_outlevel2_d,
-                                                               uint32_t* __restrict__          idx_sideband2_d,
-                                                               const uint8_t* __restrict__     index_count_table_d,
-                                                               const FieldType* __restrict__   field_d,
-                                                               const size_t                    field_row_stride,
-                                                               const size_t                    field_slice_stride,
-                                                               const float                     threshold,
-                                                               const uint3                     chunks,
-                                                               const uint32_t                  chunk_count,
-                                                               const uint32_t                  n1,
-                                                               const uint32_t                  n2,
-                                                               const uint3                     grid_max_index)
+  template<class FieldType, bool indexed>
+  __global__ __launch_bounds__(32 * 5) void reduceBaseTriple(uint8_t* __restrict__           index_cases_d,
+                                                             uchar4* __restrict__            vtx_outlevel0_d,
+                                                             uint4* __restrict__             vtx_outlevel1_d,
+                                                             uint4* __restrict__             vtx_outlevel2_d,
+                                                             uint32_t* __restrict__          vtx_sideband2_d,
+                                                             uchar4* __restrict__            idx_outlevel0_d,
+                                                             uint4* __restrict__             idx_outlevel1_d,
+                                                             uint4* __restrict__             idx_outlevel2_d,
+                                                             uint32_t* __restrict__          idx_sideband2_d,
+                                                             const uint8_t* __restrict__     index_count_table_d,
+                                                             const FieldType* __restrict__   field_d,
+                                                             const size_t                    field_row_stride,
+                                                             const size_t                    field_slice_stride,
+                                                             const float                     threshold,
+                                                             const uint3                     chunks,
+                                                             const uint32_t                  chunk_count,
+                                                             const uint32_t                  n1,
+                                                             const uint32_t                  n2,
+                                                             const uint3                     grid_max_index)
   {
     const uint32_t warp = threadIdx.x / 32;
     const uint32_t thread = threadIdx.x % 32;
@@ -581,24 +581,24 @@ namespace {
     if (chunk_ix < chunk_count) {
       const uint32_t off_s = 32 * 5 * warp + thread;
       const uint32_t off_d = 32 * 5 * chunk_ix + thread;
-      reduceBaseKernel<FieldType, true>(index_cases_d   + 5 * off_d,
-                                        idx_outlevel0_d +     off_d,
-                                        vtx_outlevel0_d +     off_d,
-                                        idx_sideband0_s +     off_s,
-                                        vtx_sideband0_s +     off_s,
-                                        index_count_table_d,
-                                        field_cell_d,
-                                        field_row_stride,
-                                        field_slice_stride,
-                                        cell,
-                                        grid_max_index,
-                                        thread,
-                                        threshold);
+      reduceBaseKernel<FieldType, indexed>(index_cases_d + 5 * off_d,
+                                           idx_outlevel0_d + off_d, indexed ? vtx_outlevel0_d + off_d : nullptr,
+                                           idx_sideband0_s + off_s, indexed ? vtx_sideband0_s + off_s : nullptr,
+                                           index_count_table_d,
+                                           field_cell_d,
+                                           field_row_stride,
+                                           field_slice_stride,
+                                           cell,
+                                           grid_max_index,
+                                           thread,
+                                           threshold);
     }
     else {
       for (unsigned k = 0; k < 5; k++) {
         idx_sideband0_s[32 * (5 * warp + k) + thread] = 0;
-        vtx_sideband0_s[32 * (5 * warp + k) + thread] = 0;
+        if (indexed) {
+          vtx_sideband0_s[32 * (5 * warp + k) + thread] = 0;
+        }
       }
     }
 
@@ -612,22 +612,23 @@ namespace {
                     idx_sideband1_s +     off_s,
                     idx_sideband0_s + 5 * off_s,
                     false,                off_d < n1);
-
-      reductionStep(vtx_outlevel1_d +     off_d,
-                    vtx_sideband1_s +     off_s,
-                    vtx_sideband0_s + 5 * off_s,
-                    false,                off_d < n1);
+      if (indexed) {
+        reductionStep(vtx_outlevel1_d + off_d,
+                      vtx_sideband1_s + off_s,
+                      vtx_sideband0_s + 5 * off_s,
+                      false, off_d < n1);
+      }
     }
     __syncthreads();
 
     // Reduction into level 2, read 5*32 values, write 32 uvec4 and sideband values
-    if (warp <2) {
+    if (warp < (indexed ? 2 : 1)) {
       uint32_t off_s = thread;
       uint32_t off_d = 32 * blockIdx.x + thread;
-      reductionStep((warp == 0 ? idx_outlevel2_d : vtx_outlevel2_d) +     off_d,
-                    (warp == 0 ? idx_sideband2_d : vtx_sideband2_d) +     off_d,
-                    (warp == 0 ? idx_sideband1_s : vtx_sideband1_s) + 5 * off_s,
-                    true,                                                 off_d < n2);
+      reductionStep((!indexed || warp == 0 ? idx_outlevel2_d : vtx_outlevel2_d) + off_d,
+                    (!indexed || warp == 0 ? idx_sideband2_d : vtx_sideband2_d) + off_d,
+                    (!indexed || warp == 0 ? idx_sideband1_s : vtx_sideband1_s) + 5 * off_s,
+                    true, off_d < n2);
     }
 
   }
@@ -758,160 +759,176 @@ void ComputeStuff::MC::Internal::buildPyramid(Context* ctx,
                                     ctx->grid_size.y - 1,
                                     ctx->grid_size.z - 1);
   // Indexed pyramid buildup
-  if (ctx->indexed) {
-
-    unsigned next_level = ~0u;
-    switch (ctx->build_mode) {
-    case BaseLevelBuildMode::SingleLevelSingleWarp: {
-      uint32_t bn = ctx->chunk_total;
-      uint32_t tn = 32;
-      next_level = 1;
+  unsigned next_level = ~0u;
+  switch (ctx->build_mode) {
+  case BaseLevelBuildMode::SingleLevelSingleWarp: {
+    uint32_t bn = ctx->chunk_total;
+    uint32_t tn = 32;
+    next_level = 1;
+    if (ctx->indexed) {
       reduceBaseIndexed<float><<<bn, tn, 0, stream>>>(ctx->index_cases_d,                   // block writes 5*5*32=800 uint8's
-                                                      (uchar4*)(ctx->vertex_pyramid + ctx->level_offsets[0]), // block writes 5*32 uvec4's
-                                                      ctx->vertex_sidebands[0],                    // block writes 5*32 uint32's
-                                                      (uchar4*)(ctx->index_pyramid + ctx->level_offsets[0]), // block writes 5*32 uvec4's
-                                                      ctx->index_sidebands[0],                    // block writes 5*32 uint32's
-                                                      ctx->tables->index_count,
-                                                      field_d,
-                                                      size_t(field_size.x),
-                                                      size_t(field_size.x) * field_size.y,
-                                                      threshold,
-                                                      ctx->chunks,
-                                                      grid_max_index);
-      break;
+                                                            (uchar4*)(ctx->vertex_pyramid + ctx->level_offsets[0]), // block writes 5*32 uvec4's
+                                                            ctx->vertex_sidebands[0],                    // block writes 5*32 uint32's
+                                                            (uchar4*)(ctx->index_pyramid + ctx->level_offsets[0]), // block writes 5*32 uvec4's
+                                                            ctx->index_sidebands[0],                    // block writes 5*32 uint32's
+                                                            ctx->tables->index_count,
+                                                            field_d,
+                                                            size_t(field_size.x),
+                                                            size_t(field_size.x) * field_size.y,
+                                                            threshold,
+                                                            ctx->chunks,
+                                                            grid_max_index);
     }
-    case BaseLevelBuildMode::SingleLevelMultiWarp: {
-      uint32_t bn = ctx->chunk_total;
-      uint32_t tn = 32 * 6;
-      next_level = 1;
+    else {
+      reduceBase<float><<<bn, tn, 0, stream>>>(ctx->index_cases_d,                   // block writes 5*5*32=800 uint8's
+                                                (uchar4*)(ctx->index_pyramid + ctx->level_offsets[0]), // block writes 5*32 uvec4's
+                                                ctx->index_sidebands[0],                    // block writes 5*32 uint32's
+                                                ctx->tables->index_count,
+                                                field_d,
+                                                size_t(field_size.x),
+                                                size_t(field_size.x) * field_size.y,
+                                                threshold,
+                                                ctx->chunks,
+                                                grid_max_index);
+    }
+    break;
+  }
+  case BaseLevelBuildMode::SingleLevelMultiWarp: {
+    uint32_t bn = ctx->chunk_total;
+    uint32_t tn = 32 * 6;
+    next_level = 1;
+    if (ctx->indexed) {
       reduceBaseIndexedMultiWarp<float><<<bn, tn, 0, stream>>>(ctx->index_cases_d,                   // block writes 5*5*32=800 uint8's
-                                                               (uchar4*)(ctx->vertex_pyramid + ctx->level_offsets[0]), // block writes 5*32 uvec4's
-                                                               ctx->vertex_sidebands[0],                    // block writes 5*32 uint32's
-                                                               (uchar4*)(ctx->index_pyramid + ctx->level_offsets[0]), // block writes 5*32 uvec4's
-                                                               ctx->index_sidebands[0],                    // block writes 5*32 uint32's
-                                                               ctx->tables->index_count,
-                                                               field_d,
-                                                               size_t(field_size.x),
-                                                               size_t(field_size.x) * field_size.y,
-                                                               threshold,
-                                                               ctx->chunks,
-                                                               grid_max_index);
-      break;
+                                                                (uchar4*)(ctx->vertex_pyramid + ctx->level_offsets[0]), // block writes 5*32 uvec4's
+                                                                ctx->vertex_sidebands[0],                    // block writes 5*32 uint32's
+                                                                (uchar4*)(ctx->index_pyramid + ctx->level_offsets[0]), // block writes 5*32 uvec4's
+                                                                ctx->index_sidebands[0],                    // block writes 5*32 uint32's
+                                                                ctx->tables->index_count,
+                                                                field_d,
+                                                                size_t(field_size.x),
+                                                                size_t(field_size.x) * field_size.y,
+                                                                threshold,
+                                                                ctx->chunks,
+                                                                grid_max_index);
     }
-    case BaseLevelBuildMode::DoubleLevelMultiWarp: {
-      uint32_t bn = ctx->chunk_total;
-      uint32_t tn = 32 * 6;
-      next_level = 2;
-      reduceBaseIndexedMultiWarp2<<<bn, tn, 0, stream>>>(ctx->index_cases_d,
-                                                         (uchar4*)(ctx->vertex_pyramid + ctx->level_offsets[0]),
-                                                         ctx->vertex_pyramid + ctx->level_offsets[1],
-                                                         ctx->vertex_sidebands[0],
-                                                         (uchar4*)(ctx->index_pyramid + ctx->level_offsets[0]),
-                                                         ctx->index_pyramid + ctx->level_offsets[1],
-                                                         ctx->index_sidebands[0],
-                                                         ctx->tables->index_count,
-                                                         field_d,
-                                                         size_t(field_size.x),
-                                                         size_t(field_size.x) * field_size.y,
-                                                         threshold,
-                                                         ctx->chunks,
-                                                         ctx->level_sizes[0],
-                                                         ctx->level_sizes[1],
-                                                         grid_max_index);
-      break;
-    }
-    case BaseLevelBuildMode::TripleLevelSingleWarp: {
-      uint32_t bn = (ctx->level_sizes[2] + 31) / 32;
-      uint32_t tn = 32 * 5;
-      next_level = 3;
-      reduceBaseIndexed3 << <bn, tn, 0, stream >> > (ctx->index_cases_d,
-                                                     (uchar4*)(ctx->vertex_pyramid + ctx->level_offsets[0]),
-                                                     ctx->vertex_pyramid + ctx->level_offsets[1],
-                                                     ctx->vertex_pyramid + ctx->level_offsets[2],
-                                                     ctx->vertex_sidebands[0],
-                                                     (uchar4*)(ctx->index_pyramid + ctx->level_offsets[0]),
-                                                     ctx->index_pyramid + ctx->level_offsets[1],
-                                                     ctx->index_pyramid + ctx->level_offsets[2],
-                                                     ctx->index_sidebands[0],
-                                                     ctx->tables->index_count,
-                                                     field_d,
-                                                     size_t(field_size.x),
-                                                     size_t(field_size.x) * field_size.y,
-                                                     threshold,
-                                                     ctx->chunks,
-                                                     ctx->chunk_total,
-                                                     ctx->level_sizes[1],
-                                                     ctx->level_sizes[2],
-                                                     grid_max_index);
-      break;
-    }
-    default:
-      assert(false && "Invalid build mode");
+    else {
+      // Not implemented
       abort();
     }
+    break;
+  }
+  case BaseLevelBuildMode::DoubleLevelMultiWarp: {
+    uint32_t bn = ctx->chunk_total;
+    uint32_t tn = 32 * 6;
+    next_level = 2;
+    if (ctx->indexed) {
+      reduceBaseIndexedMultiWarp2<<<bn, tn, 0, stream>>>(ctx->index_cases_d,
+                                                          (uchar4*)(ctx->vertex_pyramid + ctx->level_offsets[0]),
+                                                          ctx->vertex_pyramid + ctx->level_offsets[1],
+                                                          ctx->vertex_sidebands[0],
+                                                          (uchar4*)(ctx->index_pyramid + ctx->level_offsets[0]),
+                                                          ctx->index_pyramid + ctx->level_offsets[1],
+                                                          ctx->index_sidebands[0],
+                                                          ctx->tables->index_count,
+                                                          field_d,
+                                                          size_t(field_size.x),
+                                                          size_t(field_size.x) * field_size.y,
+                                                          threshold,
+                                                          ctx->chunks,
+                                                          ctx->level_sizes[0],
+                                                          ctx->level_sizes[1],
+                                                          grid_max_index);
+    }
+    else {
+      // Not implemented
+      abort();
+    }
+    break;
+  }
+  case BaseLevelBuildMode::TripleLevelSingleWarp: {
+    uint32_t bn = (ctx->level_sizes[2] + 31) / 32;
+    uint32_t tn = 32 * 5;
+    next_level = 3;
+    if (ctx->indexed) {
+      reduceBaseTriple<float, true><<<bn, tn, 0, stream>>>(ctx->index_cases_d,
+                                                            (uchar4*)(ctx->vertex_pyramid + ctx->level_offsets[0]),
+                                                            ctx->vertex_pyramid + ctx->level_offsets[1],
+                                                            ctx->vertex_pyramid + ctx->level_offsets[2],
+                                                            ctx->vertex_sidebands[0],
+                                                            (uchar4*)(ctx->index_pyramid + ctx->level_offsets[0]),
+                                                            ctx->index_pyramid + ctx->level_offsets[1],
+                                                            ctx->index_pyramid + ctx->level_offsets[2],
+                                                            ctx->index_sidebands[0],
+                                                            ctx->tables->index_count,
+                                                            field_d,
+                                                            size_t(field_size.x),
+                                                            size_t(field_size.x) * field_size.y,
+                                                            threshold,
+                                                            ctx->chunks,
+                                                            ctx->chunk_total,
+                                                            ctx->level_sizes[1],
+                                                            ctx->level_sizes[2],
+                                                            grid_max_index);
+    }
+    else {
+      reduceBaseTriple<float, false><<<bn, tn, 0, stream>>>(ctx->index_cases_d,
+                                                            nullptr,
+                                                            nullptr,
+                                                            nullptr,
+                                                            nullptr,
+                                                            (uchar4*)(ctx->index_pyramid + ctx->level_offsets[0]),
+                                                            ctx->index_pyramid + ctx->level_offsets[1],
+                                                            ctx->index_pyramid + ctx->level_offsets[2],
+                                                            ctx->index_sidebands[0],
+                                                            ctx->tables->index_count,
+                                                            field_d,
+                                                            size_t(field_size.x),
+                                                            size_t(field_size.x)* field_size.y,
+                                                            threshold,
+                                                            ctx->chunks,
+                                                            ctx->chunk_total,
+                                                            ctx->level_sizes[1],
+                                                            ctx->level_sizes[2],
+                                                            grid_max_index);
+    }
+    break;
+  }
+  default:
+    assert(false && "Invalid build mode");
+    abort();
+  }
+  if (ctx->indexed) {
     CHECKED_CUDA(cudaEventRecord(ctx->baseEvent, stream));
     CHECKED_CUDA(cudaStreamWaitEvent(ctx->indexStream, ctx->baseEvent, 0));
+  }
 
-    // FIXME: Try to run the vertex pyramid in a separate stream. Sync may be too costly though, and in that
-    //        case it might be better to just merge the two launches and use e.g. block.y to tell which
-    //        pyramid to reduce.
-    bool sb = true;
-    for (unsigned i = next_level; i < ctx->levels - 3; i++) {
-      const auto blocks = (ctx->level_sizes[i] + 31) / 32;
-      reduce1<<<blocks, 5 * 32, 0, stream>>>(ctx->index_pyramid + ctx->level_offsets[i],    // Each block will write 32 uvec4's into this
-                                             ctx->index_sidebands[sb ? 1 : 0],              // Each block will write 32 uint32's into this
-                                             ctx->level_sizes[i],                           // Number of uvec4's in level i
-                                             ctx->index_sidebands[sb ? 0 : 1],              // Input, each block will read 5*32=160 values from here
-                                             ctx->level_sizes[i - 1]);                      // Number of sideband elements from level i-1
-      // FIXME: Try to combine these two kernels into one, as they are independent.
+  bool sb = true;
+  for (unsigned i = next_level; i < ctx->levels - 3; i++) {
+    const auto blocks = (ctx->level_sizes[i] + 31) / 32;
+    reduce1<<<blocks, 5 * 32, 0, stream>>>(ctx->index_pyramid + ctx->level_offsets[i],    // Each block will write 32 uvec4's into this
+                                            ctx->index_sidebands[sb ? 1 : 0],              // Each block will write 32 uint32's into this
+                                            ctx->level_sizes[i],                           // Number of uvec4's in level i
+                                            ctx->index_sidebands[sb ? 0 : 1],              // Input, each block will read 5*32=160 values from here
+                                            ctx->level_sizes[i - 1]);                      // Number of sideband elements from level i-1
+    if(ctx->indexed) {
       reduce1<<<blocks, 5 * 32, 0, ctx->indexStream>>>(ctx->vertex_pyramid + ctx->level_offsets[i], // Each block will write 32 uvec4's into this
-                                                       ctx->vertex_sidebands[sb ? 1 : 0],           // Each block will write 32 uint32's into this
-                                                       ctx->level_sizes[i],                         // Number of uvec4's in level i
-                                                       ctx->vertex_sidebands[sb ? 0 : 1],           // Input, each block will read 5*32=160 values from here
-                                                       ctx->level_sizes[i - 1]);                    // Number of sideband elements from level i-1
-      sb = !sb;
+                                                        ctx->vertex_sidebands[sb ? 1 : 0],           // Each block will write 32 uint32's into this
+                                                        ctx->level_sizes[i],                         // Number of uvec4's in level i
+                                                        ctx->vertex_sidebands[sb ? 0 : 1],           // Input, each block will read 5*32=160 values from here
+                                                        ctx->level_sizes[i - 1]);                    // Number of sideband elements from level i-1
     }
-    reduceApex<<<1, 4 * 32, 0, stream>>>(ctx->index_pyramid + 4,
-                                         ctx->sum_d,
-                                         ctx->index_sidebands[sb ? 0 : 1],
-                                         ctx->level_sizes[ctx->levels - 4]);
-    // FIXME: Try to combine these two kernels into one, as they are independent.
-    reduceApex<<<1, 4 * 32, 0, ctx->indexStream>>>(ctx->vertex_pyramid + 4,
-                                                   ctx->sum_d + 1,
-                                                   ctx->vertex_sidebands[sb ? 0 : 1],
-                                                   ctx->level_sizes[ctx->levels - 4]);
-
+    sb = !sb;
+  }
+  reduceApex<<<1, 4 * 32, 0, stream>>>(ctx->index_pyramid + 4,
+                                        ctx->sum_d,
+                                        ctx->index_sidebands[sb ? 0 : 1],
+                                        ctx->level_sizes[ctx->levels - 4]);
+  if (ctx->indexed) {
+    reduceApex << <1, 4 * 32, 0, ctx->indexStream >> > (ctx->vertex_pyramid + 4,
+                                                        ctx->sum_d + 1,
+                                                        ctx->vertex_sidebands[sb ? 0 : 1],
+                                                        ctx->level_sizes[ctx->levels - 4]);
     CHECKED_CUDA(cudaEventRecord(ctx->indexDoneEvent, ctx->indexStream));
     CHECKED_CUDA(cudaStreamWaitEvent(stream, ctx->indexDoneEvent, 0));
   }
-
-  // Non-indexed pyramid buildup
-  else {
-    reduceBase<float><<<ctx->chunk_total, 32, 0, stream>>>(ctx->index_cases_d,                   // block writes 5*5*32=800 uint8's
-                                                           (uchar4*)(ctx->index_pyramid + ctx->level_offsets[0]), // block writes 5*32 uvec4's
-                                                           ctx->index_sidebands[0],                    // block writes 5*32 uint32's
-                                                           ctx->tables->index_count,
-                                                           field_d,
-                                                           size_t(field_size.x),
-                                                           size_t(field_size.x)* field_size.y,
-                                                           threshold,
-                                                           ctx->chunks,
-                                                           grid_max_index);
-
-    bool sb = true;
-    for (unsigned i = 1; i < ctx->levels - 3; i++) {
-      const auto blocks = (ctx->level_sizes[i] + 31) / 32;
-      reduce1<<<blocks, 5 * 32, 0, stream>>>(ctx->index_pyramid + ctx->level_offsets[i],    // Each block will write 32 uvec4's into this
-                                             ctx->index_sidebands[sb ? 1 : 0],              // Each block will write 32 uint32's into this
-                                             ctx->level_sizes[i],                           // Number of uvec4's in level i
-                                             ctx->index_sidebands[sb ? 0 : 1],              // Input, each block will read 5*32=160 values from here
-                                             ctx->level_sizes[i - 1]);                      // Number of sideband elements from level i-1
-      sb = !sb;
-    }
-    reduceApex<<<1, 4 * 32, 0, stream>>>(ctx->index_pyramid + 4,
-                                         ctx->sum_d,
-                                         ctx->index_sidebands[sb ? 0 : 1],
-                                         ctx->level_sizes[ctx->levels - 4]);
-  }
-
 }
