@@ -194,6 +194,114 @@ namespace {
     }
   }
 
+  template<class FieldType, bool indexed>
+  __device__ void reduceBaseKernelMultiWarp(uint8_t* __restrict__ index_case_ptr,
+                                            uchar4* __restrict__ out_index_level0_ptr,
+                                            uchar4* __restrict__ out_vertex_level0_ptr,
+                                            uint32_t* __restrict__ out_index_sideband_ptr,
+                                            uint32_t* __restrict__ out_vertex_sideband_ptr,
+                                            float* __restrict__ shmem,   // 32 * 6 * 2
+                                            const uint8_t* __restrict__   index_count,
+                                            const FieldType* __restrict__ ptr,
+                                            size_t field_row_stride,
+                                            size_t field_slice_stride,
+                                            uint3 cell,
+                                            uint3 grid_max_index,
+                                            uint32_t warp,      // 0..5
+                                            uint32_t thread,    // 0..31
+                                            float threshold)
+  {
+    float2 mask000 = make_float2(0.f, 0.f);
+    cell.z += warp;
+    if (cell.z <= grid_max_index.z) {
+      mask000 = fetch2(ptr + warp * field_slice_stride, field_row_stride, cell.y, grid_max_index.y, threshold);
+    }
+    shmem[0 * 32 * 6 + 32 * warp + thread] = mask000.x;
+    shmem[1 * 32 * 6 + 32 * warp + thread] = mask000.y;
+    __syncthreads();
+
+    unsigned isum = 0;
+    unsigned vsum = 0;
+    if(warp < 5) {
+      if (cell.z <= grid_max_index.z) {
+        float2 t0 = make_float2(__fmaf_rn(float(1 << 4), shmem[0 * 32 * 6 + 32 * (warp + 1) + thread], mask000.x),
+                                __fmaf_rn(float(1 << 4), shmem[1 * 32 * 6 + 32 * (warp + 1) + thread], mask000.y));
+
+        // Fetch case from x+1 using warp-shuffle. Last thread has garbage data,
+        // but that result is masked out.
+        float2 tt = make_float2(__shfl_down_sync(0xffffffff, t0.x, 1),
+                                __shfl_down_sync(0xffffffff, t0.y, 1));
+
+        if ((indexed ? cell.x <= grid_max_index.x : cell.x < grid_max_index.x) && thread < 31) {
+          // Merge in results from the warp shuffle. 
+          uint32_t g0 = static_cast<uint32_t>(__fmaf_rn(2.f, tt.x, t0.x));
+          uint32_t g1 = static_cast<uint32_t>(__fmaf_rn(2.f, tt.y, t0.y));
+          uint32_t s0 = __byte_perm(g0, g1, (4 << 12) | (2 << 8) | (1 << 4) | (0 << 0));
+          g0 = g0 | (s0 >> 6);
+          g1 = g1 | (g1 >> 6);
+
+          // Extract cases for the 5-element y-column of cases that each thread has
+          uint32_t case_y0 = __byte_perm(g0, 0, (4 << 12) | (4 << 8) | (4 << 4) | (0 << 0));
+          uint32_t case_y1 = __byte_perm(g0, 0, (4 << 12) | (4 << 8) | (4 << 4) | (1 << 0));
+          uint32_t case_y2 = __byte_perm(g0, 0, (4 << 12) | (4 << 8) | (4 << 4) | (2 << 0));
+          uint32_t case_y3 = __byte_perm(g1, 0, (4 << 12) | (4 << 8) | (4 << 4) | (0 << 0));
+          uint32_t case_y4 = __byte_perm(g1, 0, (4 << 12) | (4 << 8) | (4 << 4) | (1 << 0));
+
+          // Look up index count. Set count for cells outside of domain to zero. Careful masking.
+          uint32_t ic_y0 = (cell.x < grid_max_index.x) && (cell.z < grid_max_index.z) && ((cell.y + 0u) < grid_max_index.y) ? index_count[case_y0] : 0u;
+          uint32_t ic_y1 = (cell.x < grid_max_index.x) && (cell.z < grid_max_index.z) && ((cell.y + 1u) < grid_max_index.y) ? index_count[case_y1] : 0u;
+          uint32_t ic_y2 = (cell.x < grid_max_index.x) && (cell.z < grid_max_index.z) && ((cell.y + 2u) < grid_max_index.y) ? index_count[case_y2] : 0u;
+          uint32_t ic_y3 = (cell.x < grid_max_index.x) && (cell.z < grid_max_index.z) && ((cell.y + 3u) < grid_max_index.y) ? index_count[case_y3] : 0u;
+          uint32_t ic_y4 = (cell.x < grid_max_index.x) && (cell.z < grid_max_index.z) && ((cell.y + 4u) < grid_max_index.y) ? index_count[case_y4] : 0u;
+
+          // Look up vertex count. Set count for cells outside of domain to zero.
+          uint32_t vc_y0, vc_y1, vc_y2, vc_y3, vc_y4;
+          if (indexed) {
+            vc_y0 = axisCountFromCase(case_y0);
+            vc_y1 = cell.y + 1 <= grid_max_index.y ? axisCountFromCase(case_y1) : 0;
+            vc_y2 = cell.y + 2 <= grid_max_index.y ? axisCountFromCase(case_y2) : 0;
+            vc_y3 = cell.y + 3 <= grid_max_index.y ? axisCountFromCase(case_y3) : 0;
+            vc_y4 = cell.y + 4 <= grid_max_index.y ? axisCountFromCase(case_y4) : 0;
+            vsum = vc_y0 + vc_y1 + vc_y2 + vc_y3 + vc_y4;
+          }
+          else {
+            vc_y0 = 0;
+            vc_y1 = 0;
+            vc_y2 = 0;
+            vc_y3 = 0;
+            vc_y4 = 0;
+            vsum = 0;
+          }
+
+          isum = ic_y0 + ic_y1 + ic_y2 + ic_y3 + ic_y4;
+          if (isum | vsum) {
+            index_case_ptr[5 * (32 * warp) + 0] = case_y0;
+            index_case_ptr[5 * (32 * warp) + 1] = case_y1;
+            index_case_ptr[5 * (32 * warp) + 2] = case_y2;
+            index_case_ptr[5 * (32 * warp) + 3] = case_y3;
+            index_case_ptr[5 * (32 * warp) + 4] = case_y4;
+            out_index_level0_ptr[32 * warp] = make_uchar4(ic_y0,
+                                                          ic_y0 + ic_y1,
+                                                          ic_y0 + ic_y1 + ic_y2,
+                                                          ic_y0 + ic_y1 + ic_y2 + ic_y3);
+          }
+          if (indexed && vsum) {
+            out_vertex_level0_ptr[32 * warp] = make_uchar4(vc_y0,
+                                                           vc_y0 + vc_y1,
+                                                           vc_y0 + vc_y1 + vc_y2,
+                                                           vc_y0 + vc_y1 + vc_y2 + vc_y3);
+
+          }
+        }
+
+      }
+
+      out_index_sideband_ptr[32 * warp] = isum;
+      if (indexed) {
+        out_vertex_sideband_ptr[32 * warp] = vsum;
+      }
+    }
+  }
 
   template<class FieldType>
   __global__ __launch_bounds__(32) void reduceBase(uint8_t* __restrict__           index_cases_d,
@@ -280,7 +388,53 @@ namespace {
                                       threshold);
   }
 
-  
+  template<class FieldType>
+  __global__ __launch_bounds__(32 * 6) void reduceBaseIndexedMultiWarp(uint8_t* __restrict__           index_cases_d,
+                                                                       uchar4* __restrict__            out_vertex_level0_d,
+                                                                       uint32_t* __restrict__          out_vertex_sideband_d,
+                                                                       uchar4* __restrict__            out_index_level0_d,
+                                                                       uint32_t* __restrict__          out_index_sideband_d,
+                                                                       const uint8_t* __restrict__     index_count,
+                                                                       const FieldType* __restrict__   field_d,
+                                                                       const size_t                    field_row_stride,
+                                                                       const size_t                    field_slice_stride,
+                                                                       const float                     threshold,
+                                                                       const uint3                     chunks,
+                                                                       const uint3                     grid_max_index)
+  {
+    const uint32_t warp = threadIdx.x / 32;
+    const uint32_t thread = threadIdx.x % 32;
+    const uint32_t chunk_ix = blockIdx.x;
+
+    // Figure out which chunk we are in.
+    // FIXME: Try to use grid extents to mach chunk grid to avoid all these modulo/divisions.
+    uint3 chunk = make_uint3(chunk_ix % chunks.x,
+                             (chunk_ix / chunks.x) % chunks.y,
+                             (chunk_ix / chunks.x) / chunks.y);
+    uint3 cell = make_uint3(31 * chunk.x + thread,
+                            5 * chunk.y,
+                            5 * chunk.z);
+
+    __shared__ float shmem[32 * 6 * 2];
+
+    reduceBaseKernelMultiWarp<FieldType, true>(index_cases_d + static_cast<size_t>(5 * 32 * 5 * blockIdx.x + 5 * thread), // Index doesn't need more than 32 bits
+                                               out_index_level0_d + static_cast<size_t>(32 * 5 * blockIdx.x + thread),
+                                               out_vertex_level0_d + static_cast<size_t>(32 * 5 * blockIdx.x + thread),
+                                               out_index_sideband_d + static_cast<size_t>(32 * 5 * blockIdx.x + thread),
+                                               out_vertex_sideband_d + static_cast<size_t>(32 * 5 * blockIdx.x + thread),
+                                               shmem,
+                                               index_count,
+                                               field_d + cell.z * field_slice_stride
+                                               + cell.y * field_row_stride
+                                               + min(grid_max_index.x, cell.x),
+                                               field_row_stride,
+                                               field_slice_stride,
+                                               cell,
+                                               grid_max_index,
+                                               warp,
+                                               thread,
+                                               threshold);
+  }
 
 
 
@@ -1002,6 +1156,24 @@ void ComputeStuff::MC::buildPN(Context* ctx,
     if (ctx->indexed) {
       // FIXME: Try to add extra reduction passes on the tail of this kernel (2 or 3 levels in one go
       //        have worked well before) and see if that reduces memory pressure.
+#if 1
+      unsigned i0 = 1;
+      ::reduceBaseIndexedMultiWarp<float><<<ctx->chunk_total, 32*6, 0, stream>>>(ctx->index_cases_d,                   // block writes 5*5*32=800 uint8's
+                                                                                 (uchar4*)(ctx->vertex_pyramid + ctx->level_offsets[0]), // block writes 5*32 uvec4's
+                                                                                 ctx->vertex_sidebands[0],                    // block writes 5*32 uint32's
+                                                                                 (uchar4*)(ctx->index_pyramid + ctx->level_offsets[0]), // block writes 5*32 uvec4's
+                                                                                 ctx->index_sidebands[0],                    // block writes 5*32 uint32's
+                                                                                 ctx->tables->index_count,
+                                                                                 field_d,
+                                                                                 size_t(field_size.x),
+                                                                                 size_t(field_size.x) * field_size.y,
+                                                                                 threshold,
+                                                                                 ctx->chunks,
+                                                                                 make_uint3(ctx->grid_size.x - 1,
+                                                                                            ctx->grid_size.y - 1,
+                                                                                            ctx->grid_size.z - 1));
+#elif 1
+      unsigned i0 = 1;
       ::reduceBaseIndexed<float> << <ctx->chunk_total, 32, 0, stream >> > (ctx->index_cases_d,                   // block writes 5*5*32=800 uint8's
                                                                            (uchar4*)(ctx->vertex_pyramid + ctx->level_offsets[0]), // block writes 5*32 uvec4's
                                                                            ctx->vertex_sidebands[0],                    // block writes 5*32 uint32's
@@ -1016,6 +1188,7 @@ void ComputeStuff::MC::buildPN(Context* ctx,
                                                                            make_uint3(ctx->grid_size.x - 1,
                                                                                       ctx->grid_size.y - 1,
                                                                                       ctx->grid_size.z - 1));
+#endif
 
       CHECKED_CUDA(cudaEventRecord(ctx->baseEvent, stream));
       CHECKED_CUDA(cudaStreamWaitEvent(ctx->indexStream, ctx->baseEvent, 0));
@@ -1024,7 +1197,7 @@ void ComputeStuff::MC::buildPN(Context* ctx,
       //        case it might be better to just merge the two launches and use e.g. block.y to tell which
       //        pyramid to reduce.
       bool sb = true;
-      for (unsigned i = 1; i < ctx->levels - 3; i++) {
+      for (unsigned i = i0; i < ctx->levels - 3; i++) {
         const auto blocks = (ctx->level_sizes[i] + 31) / 32;
         reduce1 << <blocks, 5 * 32, 0, stream >> > (ctx->index_pyramid + ctx->level_offsets[i],    // Each block will write 32 uvec4's into this
                                                     ctx->index_sidebands[sb ? 1 : 0],              // Each block will write 32 uint32's into this
