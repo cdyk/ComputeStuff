@@ -23,6 +23,13 @@ namespace ComputeStuff {
       DynamicParallelism
     };
 
+    enum struct BaseLevelBuildMode
+    {
+      SingleLevelSingleWarp,
+      SingleLevelMultiWarp,
+      DoubleLevelMultiWarp
+    };
+
     struct Context
     {
       const Tables* tables = nullptr;
@@ -50,6 +57,7 @@ namespace ComputeStuff {
       cudaEvent_t   indexExtractDoneEvent = 0;
       cudaStream_t  indexStream = 0;
       ExtractionMode extraction_mode = ExtractionMode::Blocking;
+      BaseLevelBuildMode build_mode = BaseLevelBuildMode::DoubleLevelMultiWarp;
       bool          indexed = false;
     };
 
