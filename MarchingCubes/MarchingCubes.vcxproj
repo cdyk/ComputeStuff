@@ -156,6 +156,8 @@ copy "$(CudaToolkitBinDir)\cudart*.dll" "$(OutDir)"</Command>
     </CudaCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <CudaCompile Include="BuildPyramid.cu" />
+    <CudaCompile Include="GenerateGeometry.cu" />
     <CudaCompile Include="MC.cu" />
   </ItemGroup>
   <ItemGroup>

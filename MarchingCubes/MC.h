@@ -87,5 +87,31 @@ namespace ComputeStuff {
                  bool skipPyramid,
                  bool alwaysExtract);
 
+    namespace Internal {
+
+      void buildPyramid(Context* ctx,
+                        size_t field_row_stride,
+                        size_t field_slice_stride,
+                        uint3 field_offset,
+                        uint3 field_size,
+                        const float* field_d,
+                        const float threshold,
+                        cudaStream_t stream);
+
+      void GenerateGeometryPN(Context* ctx,
+                              float* vertex_buffer,
+                              uint32_t* index_buffer,
+                              size_t vertex_buffer_bytesize,
+                              size_t index_buffer_bytesize,
+                              size_t field_row_stride,
+                              size_t field_slice_stride,
+                              uint3 field_offset,
+                              uint3 field_size,
+                              const float* field_d,
+                              const float threshold,
+                              cudaStream_t stream,
+                              bool alwaysExtract);
+
+    }
   }
 }
