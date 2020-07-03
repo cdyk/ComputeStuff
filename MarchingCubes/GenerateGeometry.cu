@@ -104,7 +104,7 @@ namespace {
                          i.z + field_offset.z);
     bool less_x = q.x < field_max_index.x;
     bool less_y = q.y < field_max_index.y;
-    bool less_z = q.z < field_max_index.y;
+    bool less_z = q.z < field_max_index.z;
 
     q.x = less_x ? q.x : field_max_index.x;
     q.y = less_y ? q.y : field_max_index.y;
