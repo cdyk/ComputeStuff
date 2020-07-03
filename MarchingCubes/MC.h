@@ -17,6 +17,19 @@ namespace ComputeStuff {
       const uint8_t* index_table = nullptr;
     };
 
+    enum struct ExtractionMode
+    {
+      Blocking,
+      DynamicParallelism
+    };
+
+    enum struct BaseLevelBuildMode
+    {
+      SingleLevelMultiWarpChunk,
+      DoubleLevelMultiWarpChunk,
+      TripleLevelSingleWarpChunk,
+    };
+
     struct Context
     {
       const Tables* tables = nullptr;
@@ -25,7 +38,6 @@ namespace ComputeStuff {
       uint4*        index_pyramid = nullptr;           // baselevel is full grid
       uint32_t*     index_sidebands[2] = { nullptr, nullptr };
 
-      uint8_t*      vertex_cases_d = nullptr;           // 800 * chunk count
       uint4*        vertex_pyramid = nullptr;           // baselevel is full grid
       uint32_t*     vertex_sidebands[2] = { nullptr, nullptr };
 
@@ -41,7 +53,10 @@ namespace ComputeStuff {
 
       cudaEvent_t   baseEvent = 0;
       cudaEvent_t   indexDoneEvent = 0;
+      cudaEvent_t   indexExtractDoneEvent = 0;
       cudaStream_t  indexStream = 0;
+      ExtractionMode extraction_mode = ExtractionMode::Blocking;
+      BaseLevelBuildMode build_mode = BaseLevelBuildMode::TripleLevelSingleWarpChunk;
       bool          indexed = false;
     };
 
@@ -71,5 +86,31 @@ namespace ComputeStuff {
                  bool skipPyramid,
                  bool alwaysExtract);
 
+    namespace Internal {
+
+      void buildPyramid(Context* ctx,
+                        size_t field_row_stride,
+                        size_t field_slice_stride,
+                        uint3 field_offset,
+                        uint3 field_size,
+                        const float* field_d,
+                        const float threshold,
+                        cudaStream_t stream);
+
+      void GenerateGeometryPN(Context* ctx,
+                              float* vertex_buffer,
+                              uint32_t* index_buffer,
+                              size_t vertex_buffer_bytesize,
+                              size_t index_buffer_bytesize,
+                              size_t field_row_stride,
+                              size_t field_slice_stride,
+                              uint3 field_offset,
+                              uint3 field_size,
+                              const float* field_d,
+                              const float threshold,
+                              cudaStream_t stream,
+                              bool alwaysExtract);
+
+    }
   }
 }

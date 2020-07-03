@@ -37,13 +37,31 @@ namespace {
   bool wireframe = false;
   bool recreate_context = true;
   bool indexed = true;
+
+  enum LogLevels {
+    ALWAYS = 0,
+    ERROR = 1,
+    WARNING = 2,
+    INFO = 3,
+    DEBUG = 4,
+    TRACE = 5
+  };
+  uint32_t loglevel = 4;
+
+#define LOG_ALWAYS(msg, ...) do { fputs("[A] ", stderr); fprintf(stderr, msg, ##__VA_ARGS__); fputc('\n', stderr); } while (0)
+#define LOG_ERROR(msg, ...) do { if(ERROR <= loglevel) {  fputs("[E] ", stderr); fprintf(stderr, msg, ##__VA_ARGS__); fputc('\n', stderr);} } while (0)
+#define LOG_WARNING(msg, ...) do { if(WARNING <= loglevel) {  fputs("[W] ", stderr); fprintf(stderr, msg, ##__VA_ARGS__); fputc('\n', stderr);} } while (0)
+#define LOG_INFO(msg, ...) do { if(INFO <= loglevel) {  fputs("[I] ", stderr); fprintf(stderr, msg, ##__VA_ARGS__); fputc('\n', stderr);} } while (0)
+#define LOG_DEBUG(msg, ...) do { if(DEBUG <= loglevel) {  fputs("[D] ", stderr); fprintf(stderr, msg, ##__VA_ARGS__); fputc('\n', stderr);} } while (0)
+#define LOG_TRACE(msg, ...) do { if(TRACE <= loglevel) {  fputs("[T] ", stderr); fprintf(stderr, msg, ##__VA_ARGS__); fputc('\n', stderr);} } while (0)
+
   float threshold = 0.f;
 
   std::vector<char> scalarField_host;
 
   void onGLFWError(int error, const char* what)
   {
-    fprintf(stderr, "GLFW Error: %s\n", what);
+    LOG_ERROR("GLFW Error: %s", what);
   }
 
   void onKey(GLFWwindow* window, int key, int scancode, int action, int mods)
@@ -52,7 +70,7 @@ namespace {
     if (action == GLFW_PRESS) {
       if (key == GLFW_KEY_W) {
         wireframe = !wireframe;
-        fprintf(stderr, "Wireframe: %s\n", wireframe ? "on" : "off");
+        LOG_INFO("Wireframe: %s", wireframe ? "on" : "off");
       }
       else if (key == GLFW_KEY_UP) {
         threshold += 10.f; print_threshold = true;
@@ -72,10 +90,10 @@ namespace {
       else if (key == GLFW_KEY_I) {
         indexed = !indexed;
         recreate_context = true;
-        fprintf(stderr, "Mode is %s", indexed ? "indexed" : "non-indexed");
+        LOG_INFO("Mode is %s", indexed ? "indexed" : "non-indexed");
       }
       if (print_threshold) {
-        fprintf(stderr, "Iso-value: %f\n", threshold);
+        LOG_INFO("Iso-value: %f", threshold);
       }
     }
   }
@@ -130,14 +148,14 @@ void main() {
   {
     do {
       switch (error) {
-      case GL_INVALID_ENUM: fprintf(stderr, "GL_INVALID_ENUM\n"); break;
-      case GL_INVALID_VALUE: fprintf(stderr, "GL_INVALID_VALUE\n"); break;
-      case GL_INVALID_OPERATION: fprintf(stderr, "GL_INVALID_OPERATION\n"); break;
-      case GL_INVALID_FRAMEBUFFER_OPERATION: fprintf(stderr, "GL_INVALID_FRAMEBUFFER_OPERATION\n"); break;
-      case GL_OUT_OF_MEMORY: fprintf(stderr, "GL_OUT_OF_MEMORY\n"); break;
-      case GL_STACK_OVERFLOW: fprintf(stderr, "GL_STACK_OVERFLOW\n"); break;
-      case GL_STACK_UNDERFLOW: fprintf(stderr, "GL_STACK_UNDERFLOW\n"); break;
-      default: fprintf(stderr, "Unknown error"); break;
+      case GL_INVALID_ENUM: LOG_ERROR("GL_INVALID_ENUM"); break;
+      case GL_INVALID_VALUE: LOG_ERROR("GL_INVALID_VALUE"); break;
+      case GL_INVALID_OPERATION: LOG_ERROR("GL_INVALID_OPERATION"); break;
+      case GL_INVALID_FRAMEBUFFER_OPERATION: LOG_ERROR("GL_INVALID_FRAMEBUFFER_OPERATION"); break;
+      case GL_OUT_OF_MEMORY: LOG_ERROR("GL_OUT_OF_MEMORY"); break;
+      case GL_STACK_OVERFLOW: LOG_ERROR("GL_STACK_OVERFLOW"); break;
+      case GL_STACK_UNDERFLOW: LOG_ERROR("GL_STACK_UNDERFLOW"); break;
+      default: LOG_ERROR("Unknown error"); break;
       }
       error = glGetError();
     } while (error != GL_NO_ERROR);
@@ -149,7 +167,7 @@ void main() {
   [[noreturn]]
   void handleCudaError(cudaError_t error, const std::string file, int line)
   {
-    fprintf(stderr, "%s@%d: CUDA: %s\n", file.c_str(), line, cudaGetErrorString(error));
+    LOG_ERROR("%s@%d: CUDA: %s", file.c_str(), line, cudaGetErrorString(error));
     exit(EXIT_FAILURE);
   }
 
@@ -168,10 +186,10 @@ void main() {
     GLsizei bufSize;
     glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &bufSize);
     if (bufSize) {
-      fprintf(stderr, "Source:\n%s", src.c_str());
+      LOG_WARNING("Source:\n%s", src.c_str());
       std::vector<char> log(bufSize + 1);
       glGetShaderInfoLog(shader, bufSize + 1, nullptr, log.data());
-      fprintf(stderr, "Compilator output:\n%s", log.data());
+      LOG_WARNING("Compilator output:\n%s", log.data());
     }
 
     GLint status;
@@ -196,7 +214,7 @@ void main() {
     if (bufSize) {
       std::vector<char> log(bufSize + 1);
       glGetProgramInfoLog(program, bufSize + 1, nullptr, log.data());
-      fprintf(stderr, "Linker output:\n%s", log.data());
+      LOG_WARNING("Linker output:\n%s", log.data());
     }
 
     GLint status;
@@ -409,11 +427,11 @@ void main() {
   bool readFile(const char* path)
   {
     assert(path);
-    fprintf(stderr, "Reading %s...\n", path);
+    LOG_INFO("Reading %s...", path);
 
     FILE* fp = fopen(path, "rb");
     if (!fp) {
-      fprintf(stderr, "Error opening file \"%s\" for reading.\n", path);
+      LOG_ERROR("Error opening file \"%s\" for reading.", path);
       return false;
     }
     if (fseek(fp, 0L, SEEK_END) == 0) {
@@ -427,7 +445,7 @@ void main() {
             field_size.z = header[4] | header[5] << 8;
             size_t N = static_cast<size_t>(field_size.x) * field_size.y * field_size.z;
             if ((N + 3) * 2 != size) {
-              fprintf(stderr, "Unexpected file size.\n");
+              LOG_ERROR("Unexpected file size.");
             }
             else {
               std::vector<uint8_t> tmp(2 * N);
@@ -463,7 +481,7 @@ void main() {
                 default:
                   assert(false && "Unhandled case");
                 }
-                fprintf(stderr, "Successfully loaded %s\n", path);
+                LOG_INFO("Successfully loaded %s", path);
                 fclose(fp);
                 return true;
               }
@@ -472,7 +490,7 @@ void main() {
         }
       }
     }
-    fprintf(stderr, "Error loading \"%s\"", path);
+    LOG_ERROR("Error loading \"%s\"", path);
     fclose(fp);
     return false;
   }
@@ -481,7 +499,7 @@ void main() {
   {
     // Set up scalar field
     if (!path) {
-      fprintf(stderr, "No input file specified.\n");
+      LOG_ERROR("No input file specified.");
       exit(EXIT_FAILURE);
     }
     else if (strcmp("cayley", path) == 0) {
@@ -490,8 +508,8 @@ void main() {
     else if (!readFile(path)) {
       exit(EXIT_FAILURE);
     }
-    assert(field_size.x * field_size.y * field_size.z * 4 == scalarField_host.size());
-    fprintf(stderr, "Scalar field is [%d x %d x %d] (%d cells total)\n", field_size.x, field_size.y, field_size.z, field_size.x * field_size.y * field_size.z);
+    assert(static_cast<size_t>(field_size.x) * field_size.y * field_size.z * 4 == scalarField_host.size());
+    LOG_INFO("Scalar field is [%d x %d x %d] (%d cells total)", field_size.x, field_size.y, field_size.z, field_size.x * field_size.y * field_size.z);
     CHECKED_CUDA(cudaMalloc(&scalar_field_d, scalarField_host.size()));
     CHECKED_CUDA(cudaMemcpyAsync(scalar_field_d, scalarField_host.data(), scalarField_host.size(), cudaMemcpyHostToDevice, stream));
   }
@@ -500,7 +518,7 @@ void main() {
   {
     glfwSetErrorCallback(onGLFWError);
     if (!glfwInit()) {
-      fprintf(stderr, "GLFW failed to initialize.\n");
+      LOG_ERROR("GLFW failed to initialize.");
       exit(EXIT_FAILURE);
     }
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
@@ -539,6 +557,7 @@ int main(int argc, char** argv)
     else if (i + 1 < argc && strcmp(argv[i], "-nz") == 0) { field_size.z = uint32_t(std::atoi(argv[i + 1])); i++; }
     else if (i + 1 < argc && strcmp(argv[i], "-n") == 0) { field_size.x = uint32_t(std::atoi(argv[i + 1])); field_size.y = field_size.x; field_size.z = field_size.x; i++; }
     else if (i + 1 < argc && strcmp(argv[i], "-i") == 0) { threshold = static_cast<float>(std::atof(argv[i + 1])); i++; }
+    else if (i + 1 < argc && strcmp(argv[i], "-l") == 0) { loglevel = uint32_t(std::atoi(argv[i + 1])); i++; }
 #if 0
     // Currently only float is supported
     else if (i + 1 < argc && strcmp(argv[i], "-f") == 0) {
@@ -564,6 +583,7 @@ int main(int argc, char** argv)
       fprintf(stderr, "    -nx  int    Set number of samples in z direction.\n");
       fprintf(stderr, "    -n   int    Set uniform number of samples in x,y,z directions.\n");
       fprintf(stderr, "    -i   float  Set iso-value to extract surface for.\n");
+      fprintf(stderr, "    -l   int    Log-level, higher is more verbose.\n");
       fprintf(stderr, "    -b          Enable benchmark mode without OpenGL interop.\n");
       fprintf(stderr, "\nDataset:\n");
       fprintf(stderr, "    cayley    Built-in algebraic surface.\n");
@@ -576,7 +596,7 @@ int main(int argc, char** argv)
     }
     else {
       if (path) {
-        fprintf(stderr, "%s: input file already specified\n", argv[i]);
+        LOG_ERROR("%s: input already specified", argv[i]);
         return EXIT_FAILURE;
       }
       path = argv[i];
@@ -592,13 +612,13 @@ int main(int argc, char** argv)
     for (int i = 0; i < deviceCount; i++) {
       cudaDeviceProp dev_prop;
       cudaGetDeviceProperties(&dev_prop, i);
-      fprintf(stderr, "%c[%i] %s cap=%d.%d\n", i == deviceIndex ? '*' : ' ', i, dev_prop.name, dev_prop.major, dev_prop.minor);
+      LOG_INFO("%c[%i] %s cap=%d.%d", i == deviceIndex ? '*' : ' ', i, dev_prop.name, dev_prop.major, dev_prop.minor);
       if (i == deviceIndex) {
         found = true;
       }
     }
     if (!found) {
-      fprintf(stderr, "Illegal CUDA device index %d\n", deviceIndex);
+      LOG_ERROR("Illegal CUDA device index %d", deviceIndex);
       return EXIT_FAILURE;
     }
     cudaSetDevice(deviceIndex);
@@ -614,14 +634,14 @@ int main(int argc, char** argv)
 
     size_t free, total;
     CHECKED_CUDA(cudaMemGetInfo(&free, &total));
-    fprintf(stderr, "CUDA memory free=%zumb total=%zumb\n", (free + 1024 * 1024 - 1) / (1024 * 1024), (total + 1024 * 1024 - 1) / (1024 * 1024));
+    LOG_INFO("CUDA memory free=%zumb total=%zumb", (free + 1024 * 1024 - 1) / (1024 * 1024), (total + 1024 * 1024 - 1) / (1024 * 1024));
 
     float* scalar_field_d = nullptr;
     setupScalarField(scalar_field_d, path, field_size, stream);
-    fprintf(stderr, "Built scalar field\n");
+    LOG_INFO("Built scalar field");
 
     CHECKED_CUDA(cudaMemGetInfo(&free, &total));
-    fprintf(stderr, "CUDA memory free=%zumb total=%zumb\n", (free + 1024 * 1024 - 1) / (1024 * 1024), (total + 1024 * 1024 - 1) / (1024 * 1024));
+    LOG_INFO("CUDA memory free=%zumb total=%zumb", (free + 1024 * 1024 - 1) / (1024 * 1024), (total + 1024 * 1024 - 1) / (1024 * 1024));
 
     auto* tables = createTables(stream);
 
@@ -632,9 +652,9 @@ int main(int argc, char** argv)
     }
     benchmark_cases[] = {
       {"ix sync", true, true},
-      {"no-ix sync", false, true},
-      {"ix no-sync", true, false},
-      {"no-ix no-sync", false, false}
+      {"noix sync", false, true},
+      {"ix nosync", true, false},
+      {"noix nosync", false, false}
     };
 
     float min_time = 0.5;
@@ -643,7 +663,16 @@ int main(int argc, char** argv)
       nvtxRangePush(bc.name);
 #endif
       auto* ctx = createContext(tables, field_size, true, stream);
-      fprintf(stderr, "%10s: Created context.\n", bc.name);
+      LOG_INFO("%12s: Created context.", bc.name);
+      LOG_INFO("Grid size [%u x %u x %u]", ctx->grid_size.x, ctx->grid_size.y, ctx->grid_size.z);
+      LOG_INFO("Chunks [%u x %u x %u] (= %u) cover=[%u x %u x %u]",
+              ctx->chunks.x, ctx->chunks.y, ctx->chunks.z, ctx->chunk_total,
+              31 * ctx->chunks.x, 5 * ctx->chunks.y, 5 * ctx->chunks.z);
+      LOG_INFO("Level vec4-offset  vec4-size  (    size)");
+      for (unsigned l = 0; l < ctx->levels; l++) {
+        LOG_INFO("[%2d] %12d %10d  (%8d)", l, ctx->level_offsets[l], ctx->level_sizes[l], 4 * ctx->level_sizes[l]);
+      }
+      LOG_INFO("Total %d, levels %d", ctx->total_size, ctx->levels);
 
       // Run with no output buffers to get size of output.
       ComputeStuff::MC::buildPN(ctx,
@@ -668,9 +697,9 @@ int main(int argc, char** argv)
       CHECKED_CUDA(cudaMalloc(&vertex_data_d, 6 * sizeof(float) * vertex_count));
       uint32_t* index_data_d = nullptr;
       CHECKED_CUDA(cudaMalloc(&index_data_d, sizeof(uint32_t)* index_count));
-      fprintf(stderr, "%10s: Allocated output buffers.\n", bc.name);
+      LOG_INFO("%12s: Allocated output buffers.", bc.name);
 
-      fprintf(stderr, "%10s: Warming up\n", bc.name);
+      LOG_INFO("%12s: Warming up", bc.name);
       for (unsigned i = 0; i < 100; i++) {
         ComputeStuff::MC::buildPN(ctx,
                                   vertex_data_d,
@@ -691,7 +720,7 @@ int main(int argc, char** argv)
         }
       }
 
-      fprintf(stderr, "%10s: Benchmarking\n", bc.name);
+      LOG_INFO("%12s: Benchmarking", bc.name);
       auto start = std::chrono::high_resolution_clock::now();
       double elapsed = 0.f;
       float cuda_ms = 0.f;
@@ -742,7 +771,7 @@ int main(int argc, char** argv)
       nvtxRangePop();
 #endif
       CHECKED_CUDA(cudaMemGetInfo(&free, &total));
-      fprintf(stderr, "%10s: %.2f FPS (%.0fMVPS) cuda: %.2fms (%.0f MVPS) %ux%ux%u Nv=%u Ni=%u memfree=%zumb/%zumb\n",
+      LOG_ALWAYS("%12s: %.2f FPS (%.0fMVPS) cuda: %.2fms (%.0f MVPS) %ux%ux%u Nv=%u Ni=%u memfree=%zumb/%zumb",
               bc.name,
               iterations / elapsed, (float(iterations) * field_size.x * field_size.y * field_size.z) / (1000000.f * elapsed),
               cuda_ms / cuda_ms_n, (float(cuda_ms_n) * field_size.x * field_size.y * field_size.z) / (1000.f * cuda_ms),
@@ -758,15 +787,15 @@ int main(int argc, char** argv)
       CHECKED_CUDA(cudaFree(index_data_d));
 
       CHECKED_CUDA(cudaMemGetInfo(&free, &total));
-      fprintf(stderr, "%10s: Released resources free=%zumb total=%zumb\n", bc.name, (free + 1024 * 1024 - 1) / (1024 * 1024), (total + 1024 * 1024 - 1) / (1024 * 1024));
+      LOG_INFO("%12s: Released resources free=%zumb total=%zumb", bc.name, (free + 1024 * 1024 - 1) / (1024 * 1024), (total + 1024 * 1024 - 1) / (1024 * 1024));
 #ifdef USE_NVTOOLS_EXT
       nvtxRangePop();
 #endif
     }
 
-    fprintf(stderr, "Exiting...\n");
+    LOG_ALWAYS("Exiting...");
     CHECKED_CUDA(cudaMemGetInfo(&free, &total));
-    fprintf(stderr, "CUDA memory free=%zumb total=%zumb\n", (free + 1024 * 1024 - 1) / (1024 * 1024), (total + 1024 * 1024 - 1) / (1024 * 1024));
+    LOG_INFO("CUDA memory free=%zumb total=%zumb", (free + 1024 * 1024 - 1) / (1024 * 1024), (total + 1024 * 1024 - 1) / (1024 * 1024));
     return 0;
   }
 
@@ -778,7 +807,7 @@ int main(int argc, char** argv)
   unsigned int deviceCount;
   CHECKED_CUDA(cudaGLGetDevices(&deviceCount, nullptr, 0, cudaGLDeviceListAll));
   if (deviceCount == 0) {
-    fprintf(stderr, "No CUDA-enabled devices available.");
+    LOG_ERROR("No CUDA-enabled devices available.");
     return EXIT_FAILURE;
   }
   std::vector<int> devices(deviceCount);
@@ -789,13 +818,13 @@ int main(int argc, char** argv)
     int i = devices[k];
     cudaDeviceProp dev_prop;
     cudaGetDeviceProperties(&dev_prop, i);
-    fprintf(stderr, "%c[%i] %s cap=%d.%d\n", i == deviceIndex ? '*' : ' ', i, dev_prop.name, dev_prop.major, dev_prop.minor);
+    LOG_INFO("%c[%i] %s cap=%d.%d", i == deviceIndex ? '*' : ' ', i, dev_prop.name, dev_prop.major, dev_prop.minor);
     if (i == deviceIndex) {
       found = true;
     }
   }
   if (!found) {
-    fprintf(stderr, "Illegal CUDA device index %d\n", deviceIndex);
+    LOG_ERROR("Illegal CUDA device index %d", deviceIndex);
     return EXIT_FAILURE;
   }
   cudaSetDevice(deviceIndex);
@@ -913,7 +942,7 @@ int main(int argc, char** argv)
           glBindBuffer(GL_ARRAY_BUFFER, cudaVertexBuf);
           glBufferData(GL_ARRAY_BUFFER, newVertexBufSize, nullptr, GL_STREAM_DRAW);
           glBindBuffer(GL_ARRAY_BUFFER, 0);
-          fprintf(stderr, "Resizing: vbuf=%zub\n", newVertexBufSize);
+          LOG_INFO("Resizing: vbuf=%zub", newVertexBufSize);
         }
 
         if (indexBufTooSmall) {
@@ -921,7 +950,7 @@ int main(int argc, char** argv)
           glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, cudaIndexBuf);
           glBufferData(GL_ELEMENT_ARRAY_BUFFER, newIndexBufSize, nullptr, GL_STREAM_DRAW);
           glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
-          fprintf(stderr, "Resizing: ibuf=%zub\n", newIndexBufSize);
+          LOG_INFO("Resizing: ibuf=%zub", newIndexBufSize);
         }
 
         CHECKED_CUDA(cudaGraphicsGLRegisterBuffer(&vertexBufferResource, cudaVertexBuf, cudaGraphicsRegisterFlagsWriteDiscard));
@@ -933,7 +962,6 @@ int main(int argc, char** argv)
           CHECKED_CUDA(cudaGraphicsMapResources(1, &indexBufferResource, stream));
           CHECKED_CUDA(cudaGraphicsResourceGetMappedPointer((void**)&cudaIndexBuf_d, &cudaIndexBuf_size, indexBufferResource));
         }
-        fprintf(stderr, "%zu\n", cudaIndexBuf_size);
         ComputeStuff::MC::buildPN(ctx,
                                   cudaVertexBuf_d,
                                   cudaIndexBuf_d,
@@ -1023,22 +1051,20 @@ int main(int argc, char** argv)
       if (10 < frames && 3.0 < s) {
         size_t free, total;
         CHECKED_CUDA(cudaMemGetInfo(&free, &total));
-        fprintf(stderr, "%.2f FPS (%.2f MVPS) cuda avg: %.2fms (%.2f MVPS) %ux%ux%u Nv=%u Ni=%u ix=%s memfree=%zumb/%zumb\n",
-                frames / s, (float(frames)* field_size.x * field_size.y * field_size.z) / (1000000.f * s),
-                cuda_ms/frames, (float(frames)* field_size.x* field_size.y* field_size.z) / (1000.f * cuda_ms),
-                field_size.x, field_size.y, field_size.z,
-                vertex_count,
-                index_count,
-                indexed ? "y" : "n",
-                (free + 1024 * 1024 - 1) / (1024 * 1024),
-                (total + 1024 * 1024 - 1) / (1024 * 1024));
+        LOG_INFO("%.2f FPS (%.2f MVPS) cuda avg: %.2fms (%.2f MVPS) %ux%ux%u Nv=%u Ni=%u ix=%s memfree=%zumb/%zumb",
+                 frames / s, (float(frames)* field_size.x* field_size.y* field_size.z) / (1000000.f * s),
+                 cuda_ms / frames, (float(frames)* field_size.x* field_size.y* field_size.z) / (1000.f * cuda_ms),
+                 field_size.x, field_size.y, field_size.z,
+                 vertex_count,
+                 index_count,
+                 indexed ? "y" : "n",
+                 (free + 1024 * 1024 - 1) / (1024 * 1024),
+                 (total + 1024 * 1024 - 1) / (1024 * 1024));
         timer = now;
         frames = 0;
         cuda_ms = 0.f;
       }
     }
-
-
   }
   glfwDestroyWindow(win);
   glfwTerminate();
