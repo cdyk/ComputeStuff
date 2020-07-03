@@ -550,6 +550,57 @@ namespace {
 
   }
 
+  __global__  __launch_bounds__(5 * 32) void reduceTriple(uint4* __restrict__          hp1_d,
+                                                          uint4* __restrict__          hp2_d,
+                                                          uint4* __restrict__          hp3_d,
+                                                          uint32_t* __restrict__       sb3_d,
+                                                          const uint32_t               n1,
+                                                          const uint32_t               n2,
+                                                          const uint32_t               n3,
+                                                          const uint32_t* __restrict__ sb0_d,
+                                                          const uint32_t               n0)
+  {
+    const uint32_t warp = threadIdx.x / 32;
+    const uint32_t thread = threadIdx.x % 32;
+
+    __shared__ uint32_t sb0_s[5 * 5 * 32];
+    __shared__ uint32_t sb1_s[5 * 5 * 32];
+    for (unsigned k = 0; k < 5; k++) {
+      for (unsigned l = 0; l < 5; l++) {
+        const uint32_t off_d = 32 * (5 * (5 * (5 * blockIdx.x + warp) + k) + l) + thread;
+        sb0_s[32 * (5 * warp + l) + thread] = off_d < n0 ? sb0_d[off_d] : 0;
+      }
+      const uint32_t off_s = 32 * (5 * warp + k) + thread;
+      const uint32_t off_d = 32 * (5 * (5 * blockIdx.x + warp) + k) + thread;
+      reductionStep(hp1_d + off_d,
+                    sb1_s + off_s,
+                    sb0_s + 5 * (32 * warp + thread),
+                    false, off_d < n1);
+    }
+
+    __shared__ uint32_t sb2_s[5 * 32];
+    {
+      const uint32_t off_s = 32 * warp + thread;
+      const uint32_t off_d = 5 * 32 * blockIdx.x + off_s;
+      reductionStep(hp2_d + off_d,
+                    sb2_s + off_s,
+                    sb1_s + 5 * off_s,
+                    false, off_d < n2);
+    }
+
+    __syncthreads();
+
+    if (warp == 0) { // First warp
+      const uint32_t off_s = thread;
+      const uint32_t off_d = 32 * blockIdx.x + off_s;
+      reductionStep(hp3_d + off_d,
+                    sb3_d + off_d,
+                    sb2_s + 5 * off_s,
+                    true, off_d < n3);
+    }
+  }
+
+
   __global__  __launch_bounds__(5 * 32) void reduceDouble(uint4* __restrict__          hp1_d,
                                                           uint4* __restrict__          hp2_d,
                                                           uint32_t* __restrict__       sb2_d,
@@ -849,7 +900,33 @@ void ComputeStuff::MC::Internal::buildPyramid(Context* ctx,
 
   bool sb = true;
 
-  // Do double reductions as long as it goes...
+  // Do triple reductions as long as it goes...
+  for (; nl + 2 < ctx->levels - 3; nl += 3) {
+    const auto blocks = (ctx->level_sizes[nl + 1] + 31) / 32;
+    reduceTriple << <blocks, 5 * 32, 0, stream >> > (ctx->index_pyramid + ctx->level_offsets[nl],
+                                                     ctx->index_pyramid + ctx->level_offsets[nl + 1],
+                                                     ctx->index_pyramid + ctx->level_offsets[nl + 2],
+                                                     ctx->index_sidebands[sb ? 1 : 0],
+                                                     ctx->level_sizes[nl],
+                                                     ctx->level_sizes[nl + 1],
+                                                     ctx->level_sizes[nl + 2],
+                                                     ctx->index_sidebands[sb ? 0 : 1],
+                                                     ctx->level_sizes[nl - 1]);
+    if (ctx->indexed) {
+      reduceTriple << <blocks, 5 * 32, 0, ctx->indexStream >> > (ctx->vertex_pyramid + ctx->level_offsets[nl],
+                                                                 ctx->vertex_pyramid + ctx->level_offsets[nl + 1],
+                                                                 ctx->vertex_pyramid + ctx->level_offsets[nl + 2],
+                                                                 ctx->vertex_sidebands[sb ? 1 : 0],
+                                                                 ctx->level_sizes[nl],
+                                                                 ctx->level_sizes[nl + 1],
+                                                                 ctx->level_sizes[nl + 2],
+                                                                 ctx->vertex_sidebands[sb ? 0 : 1],
+                                                                 ctx->level_sizes[nl - 1]);
+    }
+    sb = !sb;
+  }
+
+  // Do a double reduction if two levels remain
   for (; nl + 1 < ctx->levels - 3; nl += 2) {
     const auto blocks = (ctx->level_sizes[nl + 1] + 31) / 32;
     reduceDouble<<<blocks, 5 * 32, 0, stream>>>(ctx->index_pyramid + ctx->level_offsets[nl],
