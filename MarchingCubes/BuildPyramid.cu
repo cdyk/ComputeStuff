@@ -259,15 +259,13 @@ namespace {
                                             uint32_t thread,    // 0..31
                                             float threshold)
   {
-    float2 mask000 = make_float2(0.f, 0.f);
-    cell.z += warp;
-    if (cell.z <= grid_max_index.z) {
-      mask000 = fetch2(ptr + warp * field_slice_stride, field_row_stride, cell.y, grid_max_index.y, threshold);
-    }
+    uint32_t warp_n = grid_max_index.z - min(grid_max_index.z, cell.z);
+    float2 mask000 = fetch2(ptr + min(warp, warp_n) * field_slice_stride, field_row_stride, cell.y, grid_max_index.y, threshold);
     shmem[0 * 32 * 6 + 32 * warp + thread] = mask000.x;
     shmem[1 * 32 * 6 + 32 * warp + thread] = mask000.y;
     __syncthreads();
 
+    cell.z += warp;
     unsigned isum = 0;
     unsigned vsum = 0;
     float2 t0;
