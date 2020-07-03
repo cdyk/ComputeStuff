@@ -38,7 +38,6 @@ namespace ComputeStuff {
       uint4*        index_pyramid = nullptr;           // baselevel is full grid
       uint32_t*     index_sidebands[2] = { nullptr, nullptr };
 
-      uint8_t*      vertex_cases_d = nullptr;           // 800 * chunk count
       uint4*        vertex_pyramid = nullptr;           // baselevel is full grid
       uint32_t*     vertex_sidebands[2] = { nullptr, nullptr };
 
@@ -57,7 +56,7 @@ namespace ComputeStuff {
       cudaEvent_t   indexExtractDoneEvent = 0;
       cudaStream_t  indexStream = 0;
       ExtractionMode extraction_mode = ExtractionMode::Blocking;
-      BaseLevelBuildMode build_mode = BaseLevelBuildMode::SingleLevelMultiWarpChunk;
+      BaseLevelBuildMode build_mode = BaseLevelBuildMode::TripleLevelSingleWarpChunk;
       bool          indexed = false;
     };
 

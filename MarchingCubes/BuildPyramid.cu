@@ -59,6 +59,28 @@ namespace {
                       min(grid_max_index.x, cell.x));
   }
 
+  __device__ __forceinline__ void reductionStep(uint4* __restrict__ hpo,
+                                                uint32_t* __restrict__ sbo,
+                                                const uint32_t* __restrict__ sbi,
+                                                const bool mask_sideband,
+                                                const bool not_masked)
+  {
+    uint32_t sum = 0;
+    if (not_masked) {
+      uint4 hp = make_uint4(sbi[0], sbi[1], sbi[2], sbi[3]);
+      sum = hp.x + hp.y + hp.z + hp.w + sbi[4];
+      if (sum) {
+        *hpo = make_uint4(hp.x,
+                          hp.x + hp.y,
+                          hp.x + hp.y + hp.z,
+                          hp.x + hp.y + hp.z + hp.w);
+      }
+    }
+    if (!mask_sideband || not_masked) {
+      *sbo = sum;
+    }
+  }
+
   // Fetch 32[x] x 5[y] samples from the scalar field, used for the indexed
   // baselevel buildup. A bit more care testing for valid Y so samples outside
   // will have a GL_CLAMP-ish behaviour, which we rely on to not produce
@@ -104,7 +126,9 @@ namespace {
   //
   // But this requires careful masking to avoid producing extra vertices, we
   // basically implement GL_CLAMP-behavior.
-
+  //
+  // This version lets a single warp process a full chunk, keeping y-values in
+  // registers and looping over z.
   template<class FieldType, bool indexed>
   __device__ void reduceBaseKernel(uint8_t* __restrict__ index_case_ptr,
                                    uchar4* __restrict__ out_index_level0_ptr,
@@ -216,6 +240,8 @@ namespace {
     }
   }
 
+  // This version uses 6 warps to process a full chunk, keeping y-values in
+  // registers and using warp number as z-index.
   template<class FieldType, bool indexed, bool do_sync>
   __device__ void reduceBaseKernelMultiWarp(uint8_t* __restrict__ index_case_ptr,
                                             uchar4* __restrict__ out_index_level0_ptr,
@@ -373,103 +399,64 @@ namespace {
   }
 
 
-  template<class FieldType>
-  __global__ __launch_bounds__(32 * 6) void reduceBaseIndexedMultiWarp2(uint8_t* __restrict__           index_cases_d,
-                                                                        uchar4* __restrict__            out_vertex_level0_d,
-                                                                        uint4* __restrict__            out_vertex_level1_d,
-                                                                        uint32_t* __restrict__          out_vertex_sideband_d,
-                                                                        uchar4* __restrict__            out_index_level0_d,
-                                                                        uint4* __restrict__            out_index_level1_d,
-                                                                        uint32_t* __restrict__          out_index_sideband_d,
-                                                                        const uint8_t* __restrict__     index_count,
-                                                                        const FieldType* __restrict__   field_d,
-                                                                        const size_t                    field_row_stride,
-                                                                        const size_t                    field_slice_stride,
-                                                                        const float                     threshold,
-                                                                        const uint3                     chunks,
-                                                                        const uint32_t                  n0,
-                                                                        const uint32_t                  n1,
-                                                                        const uint3                     grid_max_index)
+  // Build the base-level, and run a reducton pass afterwards, building two levels in total.
+  template<class FieldType, bool indexed>
+  __global__ __launch_bounds__(32 * 6) void reduceBaseDoubleMultiWarp(uint8_t* __restrict__           index_cases_d,
+                                                                      uchar4* __restrict__            vtx_outlevel0_d,
+                                                                      uint4* __restrict__             vtx_outlevel1_d,
+                                                                      uint32_t* __restrict__          vtx_sideband1_d,
+                                                                      uchar4* __restrict__            idx_outlevel0_d,
+                                                                      uint4* __restrict__             idx_outlevel1_d,
+                                                                      uint32_t* __restrict__          idx_sideband1_d,
+                                                                      const uint8_t* __restrict__     index_count,
+                                                                      const FieldType* __restrict__   field_d,
+                                                                      const size_t                    field_row_stride,
+                                                                      const size_t                    field_slice_stride,
+                                                                      const float                     threshold,
+                                                                      const uint3                     chunks,
+                                                                      const uint32_t                  n0,
+                                                                      const uint32_t                  n1,
+                                                                      const uint3                     grid_max_index)
   {
     const uint32_t warp = threadIdx.x / 32;
     const uint32_t thread = threadIdx.x % 32;
     const uint32_t chunk_ix = blockIdx.x;
-
-    uint3 chunk = make_uint3(chunk_ix % chunks.x,
-                             (chunk_ix / chunks.x) % chunks.y,
-                             (chunk_ix / chunks.x) / chunks.y);
-    uint3 cell = make_uint3(31 * chunk.x + thread,
-                            5 * chunk.y,
-                            5 * chunk.z);
+    const uint3 cell = cellFromChunkIx(chunks, chunk_ix, thread);
+    const FieldType* __restrict__ field_cell_d = adjustFieldPtrToCell(field_d, field_row_stride, field_slice_stride, grid_max_index, cell);
 
     __shared__ float shmem[32 * 6 * 2];
-    __shared__ uint32_t vtx_sideband[6 * 32]; // If we sync in reduceBaseKernel after fetching adjacent Z, we can recycle shmem
-    __shared__ uint32_t idx_sideband[6 * 32];
-    reduceBaseKernelMultiWarp<FieldType, true, false>(index_cases_d       + static_cast<size_t>(5 * (32 * 5 * blockIdx.x + thread) ),
-                                                      out_index_level0_d  + static_cast<size_t>(     32 * 5 * blockIdx.x + thread  ),
-                                                      out_vertex_level0_d + static_cast<size_t>(     32 * 5 * blockIdx.x + thread  ),
-                                                      idx_sideband + thread,
-                                                      vtx_sideband + thread,
-                                                      shmem,
-                                                      index_count,
-                                                      field_d + cell.z * field_slice_stride
-                                                      + cell.y * field_row_stride
-                                                      + min(grid_max_index.x, cell.x),
-                                                      field_row_stride,
-                                                      field_slice_stride,
-                                                      cell,
-                                                      grid_max_index,
-                                                      warp,
-                                                      thread,
-                                                      threshold);
+    __shared__ uint32_t vtx_sideband0_s[6 * 32]; // If we sync in reduceBaseKernel after fetching adjacent Z, we can recycle shmem
+    __shared__ uint32_t idx_sideband0_s[6 * 32];
+
+    const uint32_t off_s = thread;
+    const uint32_t off_d = 32 * 5 * chunk_ix + thread;
+    reduceBaseKernelMultiWarp<FieldType, indexed, false>(index_cases_d + 5 * off_d,
+                                                         idx_outlevel0_d + off_d, indexed ? vtx_outlevel0_d + off_d : nullptr,
+                                                         idx_sideband0_s + off_s, indexed ? vtx_sideband0_s + off_s : nullptr,
+                                                         shmem,
+                                                         index_count,
+                                                         field_cell_d,
+                                                         field_row_stride,
+                                                         field_slice_stride,
+                                                         cell,
+                                                         grid_max_index,
+                                                         warp,
+                                                         thread,
+                                                         threshold);
     __syncthreads();
 
     // Run two warps with remaining reduction
-    if (warp < 2) {
-      auto* sbi = warp == 0 ? idx_sideband : vtx_sideband;
-      auto* hpo = warp == 0 ? out_index_level1_d : out_vertex_level1_d;
-      auto* sbo = warp == 0 ? out_index_sideband_d : out_vertex_sideband_d;
-      const uint32_t offset1 = 32 * blockIdx.x + thread;
-      if (offset1 < n1) {
-        uint4 hp = make_uint4(sbi[5 * thread + 0],
-                              sbi[5 * thread + 1],
-                              sbi[5 * thread + 2],
-                              sbi[5 * thread + 3]);
-        uint32_t sum = hp.x + hp.y + hp.z + hp.w + sbi[5 * thread + 4];
-        if (sum) {
-          hpo[offset1] = make_uint4(hp.x,
-                                    hp.x + hp.y,
-                                    hp.x + hp.y + hp.z,
-                                    hp.x + hp.y + hp.z + hp.w);
-        }
-        sbo[offset1] = sum;
-      }
+    if (warp < (indexed ? 2 : 1)) {
+      uint32_t off_s = thread;
+      uint32_t off_d = 32 * blockIdx.x + thread;
+      reductionStep((!indexed || warp == 0 ? idx_outlevel1_d : vtx_outlevel1_d) + off_d,
+                    (!indexed || warp == 0 ? idx_sideband1_d : vtx_sideband1_d) + off_d,
+                    (!indexed || warp == 0 ? idx_sideband0_s : vtx_sideband0_s) + 5 * off_s,
+                    true, off_d < n1);
     }
   }
 
-  __device__ __forceinline__ void reductionStep(uint4* __restrict__ hpo,
-                                                uint32_t* __restrict__ sbo,
-                                                const uint32_t* __restrict__ sbi,
-                                                const bool mask_sideband,
-                                                const bool not_masked)
-  {
-    uint32_t sum = 0;
-    if (not_masked) {
-      uint4 hp = make_uint4(sbi[0], sbi[1], sbi[2], sbi[3]);
-      sum = hp.x + hp.y + hp.z + hp.w + sbi[4];
-      if (sum) {
-        *hpo = make_uint4(hp.x,
-                          hp.x + hp.y,
-                          hp.x + hp.y + hp.z,
-                          hp.x + hp.y + hp.z + hp.w);
-      }
-    }
-    if (!mask_sideband || not_masked) {
-      *sbo = sum;
-    }
-  }
-
-
+  // Build the base-level, and run two reduction passes afterwards, building three levels in total.
   template<class FieldType, bool indexed>
   __global__ __launch_bounds__(32 * 5) void reduceBaseTriple(uint8_t* __restrict__           index_cases_d,
                                                              uchar4* __restrict__            vtx_outlevel0_d,
@@ -604,10 +591,10 @@ namespace {
                                                     uint32_t N)
   {
     // 0 : sum + 3 padding
-    // 1 : 1 uvec4 of level 0.
-    // 2 : 5 values of level 0 (top)
-    // 7 : 25 values of level 1
-    // 32: total sum.
+    // 1 : 1 uvec4 of top level.
+    // 2 : 5 values of top level - 1
+    // 7 : 25 values of top level - 2
+    // 32: total number of uvec4's in apex.
 
     // Fetch up to 125 elements from in_d.
     uint32_t a = threadIdx.x < N ? in_d[threadIdx.x] : 0;
@@ -690,6 +677,12 @@ void ComputeStuff::MC::Internal::buildPyramid(Context* ctx,
                                     ctx->grid_size.z - 1);
   // Indexed pyramid buildup
   unsigned next_level = ~0u;
+  auto build_mode = ctx->build_mode;
+  if (build_mode == BaseLevelBuildMode::TripleLevelSingleWarpChunk && ctx->levels == 5) {
+    // There are only two levels below the apex
+    ctx->build_mode = BaseLevelBuildMode::DoubleLevelMultiWarpChunk;
+  }
+
   switch (ctx->build_mode) {
   case BaseLevelBuildMode::SingleLevelMultiWarpChunk: {
     uint32_t bn = ctx->chunk_total;
@@ -728,26 +721,40 @@ void ComputeStuff::MC::Internal::buildPyramid(Context* ctx,
     uint32_t tn = 32 * 6;
     next_level = 2;
     if (ctx->indexed) {
-      reduceBaseIndexedMultiWarp2<<<bn, tn, 0, stream>>>(ctx->index_cases_d,
-                                                          (uchar4*)(ctx->vertex_pyramid + ctx->level_offsets[0]),
-                                                          ctx->vertex_pyramid + ctx->level_offsets[1],
-                                                          ctx->vertex_sidebands[0],
-                                                          (uchar4*)(ctx->index_pyramid + ctx->level_offsets[0]),
-                                                          ctx->index_pyramid + ctx->level_offsets[1],
-                                                          ctx->index_sidebands[0],
-                                                          ctx->tables->index_count,
-                                                          field_d,
-                                                          size_t(field_size.x),
-                                                          size_t(field_size.x) * field_size.y,
-                                                          threshold,
-                                                          ctx->chunks,
-                                                          ctx->level_sizes[0],
-                                                          ctx->level_sizes[1],
-                                                          grid_max_index);
+      reduceBaseDoubleMultiWarp<float, true><<<bn, tn, 0, stream>>>(ctx->index_cases_d,
+                                                                    (uchar4*)(ctx->vertex_pyramid + ctx->level_offsets[0]),
+                                                                    ctx->vertex_pyramid + ctx->level_offsets[1],
+                                                                    ctx->vertex_sidebands[0],
+                                                                    (uchar4*)(ctx->index_pyramid + ctx->level_offsets[0]),
+                                                                    ctx->index_pyramid + ctx->level_offsets[1],
+                                                                    ctx->index_sidebands[0],
+                                                                    ctx->tables->index_count,
+                                                                    field_d,
+                                                                    size_t(field_size.x),
+                                                                    size_t(field_size.x) * field_size.y,
+                                                                    threshold,
+                                                                    ctx->chunks,
+                                                                    ctx->level_sizes[0],
+                                                                    ctx->level_sizes[1],
+                                                                    grid_max_index);
     }
     else {
-      // Not implemented
-      abort();
+      reduceBaseDoubleMultiWarp<float, false><<<bn, tn, 0, stream>>>(ctx->index_cases_d,
+                                                                     nullptr,
+                                                                     nullptr,
+                                                                     nullptr,
+                                                                     (uchar4*)(ctx->index_pyramid + ctx->level_offsets[0]),
+                                                                     ctx->index_pyramid + ctx->level_offsets[1],
+                                                                     ctx->index_sidebands[0],
+                                                                     ctx->tables->index_count,
+                                                                     field_d,
+                                                                     size_t(field_size.x),
+                                                                     size_t(field_size.x) * field_size.y,
+                                                                     threshold,
+                                                                     ctx->chunks,
+                                                                     ctx->level_sizes[0],
+                                                                     ctx->level_sizes[1],
+                                                                     grid_max_index);
     }
     break;
   }

@@ -664,6 +664,15 @@ int main(int argc, char** argv)
 #endif
       auto* ctx = createContext(tables, field_size, true, stream);
       LOG_INFO("%12s: Created context.", bc.name);
+      LOG_INFO("Grid size [%u x %u x %u]", ctx->grid_size.x, ctx->grid_size.y, ctx->grid_size.z);
+      LOG_INFO("Chunks [%u x %u x %u] (= %u) cover=[%u x %u x %u]",
+              ctx->chunks.x, ctx->chunks.y, ctx->chunks.z, ctx->chunk_total,
+              31 * ctx->chunks.x, 5 * ctx->chunks.y, 5 * ctx->chunks.z);
+      LOG_INFO("Level vec4-offset  vec4-size  (    size)");
+      for (unsigned l = 0; l < ctx->levels; l++) {
+        LOG_INFO("[%2d] %12d %10d  (%8d)", l, ctx->level_offsets[l], ctx->level_sizes[l], 4 * ctx->level_sizes[l]);
+      }
+      LOG_INFO("Total %d, levels %d", ctx->total_size, ctx->levels);
 
       // Run with no output buffers to get size of output.
       ComputeStuff::MC::buildPN(ctx,

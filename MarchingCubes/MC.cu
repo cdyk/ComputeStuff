@@ -67,17 +67,24 @@ ComputeStuff::MC::Context* ComputeStuff::MC::createContext(const Tables* tables,
   }
 
   ctx->chunk_total = ctx->chunks.x * ctx->chunks.y * ctx->chunks.z;
-#if 1
-  fprintf(stderr, "Grid size [%u x %u x %u]\n", ctx->grid_size.x, ctx->grid_size.y, ctx->grid_size.z);
-  fprintf(stderr, "Chunks [%u x %u x %u] (= %u) cover=[%u x %u x %u]\n",
-          ctx->chunks.x, ctx->chunks.y, ctx->chunks.z, ctx->chunk_total,
-          31 * ctx->chunks.x, 5 * ctx->chunks.y, 5 * ctx->chunks.z);
-#endif
 
-  // Pyramid base level, as number of uvec4's:
+  // Pyramid elements are uvec4's where the 5th element are stored in a sideband
+  // that is used to build the next level.
+  //
+  // MC cells are processed in chunks of 32 x 5 x 5 elements, and since the minimum
+  // extent is one chunk, minimum level is 5.
+  //
+  // The top 3 levels are called the apex, and are built in one go. Thus, there is
+  // minimum 2 levels below the apex.
+  //
+  // level 0: ceil(800 / 5) = 160 uvec4's + sideband
+  // level 1: ceil(160 / 5) =  32 uvec4's + sideband
+  // level 2:  ceil(32 / 5) =   7 uvec4's + sideband
+  // level 3:   ceil(7 / 5) =   2 uvec4's + sideband
+  // level 4:   ceil(2 / 5) =   1 uvec4 + total sum
   ctx->level_sizes[0] = (800 * ctx->chunk_total + 4) / 5;
   ctx->levels = 1 + static_cast<uint32_t>(std::ceil(std::log(ctx->level_sizes[0]) / std::log(5.0)));
-  assert(4 <= ctx->levels);
+  assert(5 <= ctx->levels);
   assert(ctx->levels < 16u); // 5^14 = 6103515625
 
   ctx->level_offsets[0] = 4 + 32; // First, level offsets (16 uint32's = 4 uvec4's), then pyramid apex (32 uvec4's).
@@ -119,7 +126,6 @@ ComputeStuff::MC::Context* ComputeStuff::MC::createContext(const Tables* tables,
     CHECKED_CUDA(cudaEventCreateWithFlags(&ctx->indexDoneEvent, cudaEventDisableTiming));
     CHECKED_CUDA(cudaEventCreateWithFlags(&ctx->indexExtractDoneEvent, cudaEventDisableTiming));
 
-    CHECKED_CUDA(cudaMalloc(&ctx->vertex_cases_d, sizeof(uint32_t) * 800 * ctx->chunk_total));
     CHECKED_CUDA(cudaMalloc(&ctx->vertex_pyramid, sizeof(uint4) * ctx->total_size));
     CHECKED_CUDA(cudaMalloc(&ctx->vertex_sidebands[0], sideband0_size));
     CHECKED_CUDA(cudaMalloc(&ctx->vertex_sidebands[1], sideband1_size));
@@ -131,12 +137,6 @@ ComputeStuff::MC::Context* ComputeStuff::MC::createContext(const Tables* tables,
     CHECKED_CUDA(cudaMemcpyAsync(ctx->vertex_pyramid, ctx->level_offsets, sizeof(Context::level_offsets), cudaMemcpyHostToDevice, stream));
   }
 
-#if 1
-  for (unsigned l = 0; l < ctx->levels; l++) {
-    fprintf(stderr, "[%d] %8d %8d  (%8d)\n", l, ctx->level_offsets[l], ctx->level_sizes[l], 4 * ctx->level_sizes[l]);
-  }
-  fprintf(stderr, "Total %d, levels %d \n", ctx->total_size, ctx->levels);
-#endif
 
   CHECKED_CUDA(cudaHostAlloc(&ctx->sum_h, 2 * sizeof(uint32_t), cudaHostAllocMapped));
   CHECKED_CUDA(cudaHostGetDevicePointer(&ctx->sum_d, ctx->sum_h, 0));
@@ -152,12 +152,11 @@ void ComputeStuff::MC::freeContext(Context* ctx, cudaStream_t stream)
   if (ctx->index_cases_d) { CHECKED_CUDA(cudaFree(ctx->index_cases_d)); ctx->index_cases_d = nullptr; }
   if (ctx->index_pyramid) { CHECKED_CUDA(cudaFree(ctx->index_pyramid)); ctx->index_pyramid = nullptr; }
   if (ctx->index_sidebands[0]) { CHECKED_CUDA(cudaFree(ctx->index_sidebands[0])); ctx->index_sidebands[0] = nullptr; }
-  if (ctx->index_sidebands[0]) { CHECKED_CUDA(cudaFree(ctx->index_sidebands[1])); ctx->index_sidebands[1] = nullptr; }
+  if (ctx->index_sidebands[1]) { CHECKED_CUDA(cudaFree(ctx->index_sidebands[1])); ctx->index_sidebands[1] = nullptr; }
 
-  if (ctx->index_cases_d) { CHECKED_CUDA(cudaFree(ctx->vertex_cases_d)); ctx->vertex_cases_d = nullptr; }
-  if (ctx->index_pyramid) { CHECKED_CUDA(cudaFree(ctx->vertex_pyramid)); ctx->vertex_pyramid = nullptr; }
-  if (ctx->index_sidebands[0]) { CHECKED_CUDA(cudaFree(ctx->vertex_sidebands[0])); ctx->vertex_sidebands[0] = nullptr; }
-  if (ctx->index_sidebands[0]) { CHECKED_CUDA(cudaFree(ctx->vertex_sidebands[1])); ctx->vertex_sidebands[1] = nullptr; }
+  if (ctx->vertex_pyramid) { CHECKED_CUDA(cudaFree(ctx->vertex_pyramid)); ctx->vertex_pyramid = nullptr; }
+  if (ctx->vertex_sidebands[0]) { CHECKED_CUDA(cudaFree(ctx->vertex_sidebands[0])); ctx->vertex_sidebands[0] = nullptr; }
+  if (ctx->vertex_sidebands[1]) { CHECKED_CUDA(cudaFree(ctx->vertex_sidebands[1])); ctx->vertex_sidebands[1] = nullptr; }
 
   if (ctx->sum_d) { CHECKED_CUDA(cudaFreeHost(ctx->sum_d)); ctx->sum_d = nullptr; }
 
