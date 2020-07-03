@@ -497,7 +497,7 @@ void ComputeStuff::MC::Internal::GenerateGeometryPN(Context* ctx,
                                                                                  field_slice_stride,
                                                                                  field_offset,
                                                                                  max_field_index,
-                                                                                 vertex_capacity,
+                                                                                 vertex_count,
                                                                                  make_uint2(ctx->chunks.x, ctx->chunks.y),
                                                                                  scale,
                                                                                  threshold);
@@ -510,7 +510,7 @@ void ComputeStuff::MC::Internal::GenerateGeometryPN(Context* ctx,
                                                                                   ctx->index_pyramid,
                                                                                   ctx->index_cases_d,
                                                                                   ctx->tables->index_table,
-                                                                                  index_capacity,
+                                                                                  index_count,
                                                                                   make_uint2(ctx->chunks.x, ctx->chunks.y));
         }
         break;
@@ -564,7 +564,7 @@ void ComputeStuff::MC::Internal::GenerateGeometryPN(Context* ctx,
                                                                           field_slice_stride,
                                                                           field_offset,
                                                                           max_field_index,
-                                                                          vertex_capacity,
+                                                                          vertex_count,
                                                                           make_uint2(ctx->chunks.x, ctx->chunks.y),
                                                                           scale,
                                                                           threshold);
