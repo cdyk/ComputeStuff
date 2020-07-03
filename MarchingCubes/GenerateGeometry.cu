@@ -477,9 +477,9 @@ void ComputeStuff::MC::Internal::GenerateGeometryPN(Context* ctx,
   const auto max_field_index = make_uint3(field_size.x - 1,
                                           field_size.y - 1,
                                           field_size.z - 1);
-  const auto scale = make_float3(1.f / field_size.x,
-                                 1.f / field_size.y,
-                                 1.f / field_size.z);
+  const auto scale = make_float3(1.f / (field_size.x - 1.f),
+                                 1.f / (field_size.y - 1.f),
+                                 1.f / (field_size.z - 1.f));
   if (ctx->indexed) {
     if (vertex_buffer && index_buffer) {
       switch (ctx->extraction_mode) {
