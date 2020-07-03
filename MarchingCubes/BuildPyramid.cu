@@ -550,14 +550,51 @@ namespace {
 
   }
 
+  __global__  __launch_bounds__(5 * 32) void reduceDouble(uint4* __restrict__          hp1_d,
+                                                          uint4* __restrict__          hp2_d,
+                                                          uint32_t* __restrict__       sb2_d,
+                                                          const uint32_t               n1,
+                                                          const uint32_t               n2,
+                                                          const uint32_t* __restrict__ sb0_d,
+                                                          const uint32_t               n0)
+  {
+    const uint32_t warp = threadIdx.x / 32;
+    const uint32_t thread = threadIdx.x % 32;
 
+    __shared__ uint32_t sb0_s[5 * 5 * 32];
+    for (unsigned k = 0; k < 5; k++) {
+      const uint32_t off_s = 5 * 32 * warp + 32 * k + thread;
+      const uint32_t off_d = 5 * 5 * 32 * blockIdx.x + off_s;
+      sb0_s[off_s] = off_d < n0 ? sb0_d[off_d] : 0;
+    }
 
-  // Reads 160 values, outputs HP level of 128 values, and 32 sideband values.
-  __global__  __launch_bounds__(5 * 32) void reduce1(uint4* __restrict__          hp1_d,  //< Each block will write 32 uvec4's into this
-                                                     uint32_t* __restrict__       sb1_d,  //< Each block will write 32 values into this.
-                                                     const uint32_t               n1,     //< Number of uvec4's in hp1_d
-                                                     const uint32_t* __restrict__ sb0_d,  //< Each block will read 5*32=160 values from here
-                                                     const uint32_t               n0)     //< Number of elements in sb0_d
+    __shared__ uint32_t sb1_s[5 * 32];
+    {
+      const uint32_t off_s = 32 * warp + thread;
+      const uint32_t off_d = 5 * 32 * blockIdx.x + off_s;
+      reductionStep(hp1_d + off_d,
+                    sb1_s + off_s,
+                    sb0_s + 5 * off_s,
+                    false, off_d < n1);
+    }
+
+    __syncthreads();
+
+    if (warp == 0) { // First warp
+      const uint32_t off_s = thread;
+      const uint32_t off_d = 32 * blockIdx.x + off_s;
+      reductionStep(hp2_d + off_d,
+                    sb2_d + off_d,
+                    sb1_s + 5 * off_s,
+                    true, off_d < n2);
+    }
+  }
+
+  __global__  __launch_bounds__(5 * 32) void reduceSingle(uint4* __restrict__          hp1_d,  //< Each block will write 32 uvec4's into this
+                                                          uint32_t* __restrict__       sb1_d,  //< Each block will write 32 values into this.
+                                                          const uint32_t               n1,     //< Number of uvec4's in hp1_d
+                                                          const uint32_t* __restrict__ sb0_d,  //< Each block will read 5*32=160 values from here
+                                                          const uint32_t               n0)     //< Number of elements in sb0_d
   {
     const uint32_t offset0 = 5 * 32 * blockIdx.x + threadIdx.x;
 
@@ -577,6 +614,7 @@ namespace {
                     true, off_d < n1);
     }
   }
+
 
   // Build 3 top levels (=apex), which are tiny.
   __global__ __launch_bounds__(128) void reduceApex(uint4* __restrict__ apex_d,
@@ -670,7 +708,7 @@ void ComputeStuff::MC::Internal::buildPyramid(Context* ctx,
                                     ctx->grid_size.y - 1,
                                     ctx->grid_size.z - 1);
   // Indexed pyramid buildup
-  unsigned next_level = ~0u;
+  unsigned nl = ~0u;
   auto build_mode = ctx->build_mode;
   if (build_mode == BaseLevelBuildMode::TripleLevelSingleWarpChunk && ctx->levels == 5) {
     // There are only two levels below the apex
@@ -681,7 +719,7 @@ void ComputeStuff::MC::Internal::buildPyramid(Context* ctx,
   case BaseLevelBuildMode::SingleLevelMultiWarpChunk: {
     uint32_t bn = ctx->chunk_total;
     uint32_t tn = 32 * 6;
-    next_level = 1;
+    nl = 1;
     if (ctx->indexed) {
       reduceBaseMultiWarp<float, true><<<bn, tn, 0, stream>>>(ctx->index_cases_d,                   // block writes 5*5*32=800 uint8's
                                                               (uchar4*)(ctx->vertex_pyramid + ctx->level_offsets[0]), // block writes 5*32 uvec4's
@@ -713,7 +751,7 @@ void ComputeStuff::MC::Internal::buildPyramid(Context* ctx,
   case BaseLevelBuildMode::DoubleLevelMultiWarpChunk: {
     uint32_t bn = ctx->chunk_total;
     uint32_t tn = 32 * 6;
-    next_level = 2;
+    nl = 2;
     if (ctx->indexed) {
       reduceBaseDoubleMultiWarp<float, true><<<bn, tn, 0, stream>>>(ctx->index_cases_d,
                                                                     (uchar4*)(ctx->vertex_pyramid + ctx->level_offsets[0]),
@@ -755,7 +793,7 @@ void ComputeStuff::MC::Internal::buildPyramid(Context* ctx,
   case BaseLevelBuildMode::TripleLevelSingleWarpChunk: {
     uint32_t bn = (ctx->level_sizes[2] + 31) / 32;
     uint32_t tn = 32 * 5;
-    next_level = 3;
+    nl = 3;
     if (ctx->indexed) {
       reduceBaseTriple<float, true><<<bn, tn, 0, stream>>>(ctx->index_cases_d,
                                                             (uchar4*)(ctx->vertex_pyramid + ctx->level_offsets[0]),
@@ -810,19 +848,43 @@ void ComputeStuff::MC::Internal::buildPyramid(Context* ctx,
   }
 
   bool sb = true;
-  for (unsigned i = next_level; i < ctx->levels - 3; i++) {
-    const auto blocks = (ctx->level_sizes[i] + 31) / 32;
-    reduce1<<<blocks, 5 * 32, 0, stream>>>(ctx->index_pyramid + ctx->level_offsets[i],    // Each block will write 32 uvec4's into this
-                                            ctx->index_sidebands[sb ? 1 : 0],              // Each block will write 32 uint32's into this
-                                            ctx->level_sizes[i],                           // Number of uvec4's in level i
-                                            ctx->index_sidebands[sb ? 0 : 1],              // Input, each block will read 5*32=160 values from here
-                                            ctx->level_sizes[i - 1]);                      // Number of sideband elements from level i-1
+
+  // Do double reductions as long as it goes...
+  for (; nl + 1 < ctx->levels - 3; nl += 2) {
+    const auto blocks = (ctx->level_sizes[nl + 1] + 31) / 32;
+    reduceDouble<<<blocks, 5 * 32, 0, stream>>>(ctx->index_pyramid + ctx->level_offsets[nl],
+                                                ctx->index_pyramid + ctx->level_offsets[nl + 1],
+                                                ctx->index_sidebands[sb ? 1 : 0],
+                                                ctx->level_sizes[nl],
+                                                ctx->level_sizes[nl + 1],
+                                                ctx->index_sidebands[sb ? 0 : 1],
+                                                ctx->level_sizes[nl - 1]);
+    if (ctx->indexed) {
+      reduceDouble<<<blocks, 5 * 32, 0, ctx->indexStream>>>(ctx->vertex_pyramid + ctx->level_offsets[nl],
+                                                            ctx->vertex_pyramid + ctx->level_offsets[nl + 1],
+                                                            ctx->vertex_sidebands[sb ? 1 : 0],
+                                                            ctx->level_sizes[nl],
+                                                            ctx->level_sizes[nl + 1],
+                                                            ctx->vertex_sidebands[sb ? 0 : 1],
+                                                            ctx->level_sizes[nl - 1]);
+    }
+    sb = !sb;
+  }
+
+  // Do a single reduction if one remaining.
+  for (; nl < ctx->levels - 3; nl++) {
+    const auto blocks = (ctx->level_sizes[nl] + 31) / 32;
+    reduceSingle<<<blocks, 5 * 32, 0, stream>>>(ctx->index_pyramid + ctx->level_offsets[nl],
+                                                ctx->index_sidebands[sb ? 1 : 0],
+                                                ctx->level_sizes[nl],
+                                                ctx->index_sidebands[sb ? 0 : 1],
+                                                ctx->level_sizes[nl - 1]);
     if(ctx->indexed) {
-      reduce1<<<blocks, 5 * 32, 0, ctx->indexStream>>>(ctx->vertex_pyramid + ctx->level_offsets[i], // Each block will write 32 uvec4's into this
-                                                        ctx->vertex_sidebands[sb ? 1 : 0],           // Each block will write 32 uint32's into this
-                                                        ctx->level_sizes[i],                         // Number of uvec4's in level i
-                                                        ctx->vertex_sidebands[sb ? 0 : 1],           // Input, each block will read 5*32=160 values from here
-                                                        ctx->level_sizes[i - 1]);                    // Number of sideband elements from level i-1
+      reduceSingle<<<blocks, 5 * 32, 0, ctx->indexStream>>>(ctx->vertex_pyramid + ctx->level_offsets[nl],
+                                                            ctx->vertex_sidebands[sb ? 1 : 0],
+                                                            ctx->level_sizes[nl],
+                                                            ctx->vertex_sidebands[sb ? 0 : 1],
+                                                            ctx->level_sizes[nl - 1]);
     }
     sb = !sb;
   }
