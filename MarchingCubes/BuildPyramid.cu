@@ -562,25 +562,19 @@ namespace {
     const uint32_t offset0 = 5 * 32 * blockIdx.x + threadIdx.x;
 
     // FIXME: Test idea, each warp reads 32 values. read instead 32/4 uint4's.
-    __shared__ uint32_t sb[5 * 32];
-    sb[threadIdx.x] = offset0 < n0 ? sb0_d[offset0] : 0;
+    __shared__ uint32_t sb0_s[5 * 32];
+    sb0_s[threadIdx.x] = offset0 < n0 ? sb0_d[offset0] : 0;
+
     __syncthreads();
+
     if (threadIdx.x < 32) { // First warp
-      const uint32_t offset1 = 32 * blockIdx.x + threadIdx.x;
-      if (offset1 < n1) {
-        uint4 hp = make_uint4(sb[5 * threadIdx.x + 0],
-                              sb[5 * threadIdx.x + 1],
-                              sb[5 * threadIdx.x + 2],
-                              sb[5 * threadIdx.x + 3]);
-        uint32_t sum = hp.x + hp.y + hp.z + hp.w + sb[5 * threadIdx.x + 4];
-        if (sum) {
-          hp1_d[offset1] = make_uint4(hp.x,
-                                      hp.x + hp.y,
-                                      hp.x + hp.y + hp.z,
-                                      hp.x + hp.y + hp.z + hp.w);
-        }
-        sb1_d[offset1] = sum;
-      }
+      const uint32_t off_s = threadIdx.x;
+      const uint32_t off_d = 32 * blockIdx.x + threadIdx.x;
+
+      reductionStep(hp1_d + off_d,
+                    sb1_d + off_d,
+                    sb0_s + 5 * off_s,
+                    true, off_d < n1);
     }
   }
 
