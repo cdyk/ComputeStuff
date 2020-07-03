@@ -25,10 +25,9 @@ namespace ComputeStuff {
 
     enum struct BaseLevelBuildMode
     {
-      SingleLevelSingleWarp,
-      SingleLevelMultiWarp,
-      DoubleLevelMultiWarp,
-      TripleLevelSingleWarp,
+      SingleLevelMultiWarpChunk,
+      DoubleLevelMultiWarpChunk,
+      TripleLevelSingleWarpChunk,
     };
 
     struct Context
@@ -58,7 +57,7 @@ namespace ComputeStuff {
       cudaEvent_t   indexExtractDoneEvent = 0;
       cudaStream_t  indexStream = 0;
       ExtractionMode extraction_mode = ExtractionMode::Blocking;
-      BaseLevelBuildMode build_mode = BaseLevelBuildMode::TripleLevelSingleWarp;
+      BaseLevelBuildMode build_mode = BaseLevelBuildMode::SingleLevelMultiWarpChunk;
       bool          indexed = false;
     };
 

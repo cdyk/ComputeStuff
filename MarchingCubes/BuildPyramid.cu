@@ -36,6 +36,29 @@ namespace {
     return n;
   }
 
+  __device__ __forceinline__ uint3 cellFromChunkIx(const uint3 chunks, const uint32_t chunk_ix, const uint32_t thread)
+  {
+    uint3 chunk = make_uint3(chunk_ix % chunks.x,
+                             (chunk_ix / chunks.x) % chunks.y,
+                             (chunk_ix / chunks.x) / chunks.y);
+    uint3 cell = make_uint3(31 * chunk.x + thread,
+                            5 * chunk.y,
+                            5 * chunk.z);
+    return cell;
+  }
+
+  template<typename FieldType>
+  __device__ __forceinline__ const FieldType* __restrict__ adjustFieldPtrToCell(const FieldType* __restrict__ field_d,
+                                                                                const size_t field_row_stride,
+                                                                                const size_t field_slice_stride,
+                                                                                const uint3 grid_max_index,
+                                                                                const uint3 cell)
+  {
+    return field_d + (min(grid_max_index.z, cell.z) * field_slice_stride +
+                      min(grid_max_index.y, cell.y) * field_row_stride +
+                      min(grid_max_index.x, cell.x));
+  }
+
   // Fetch 32[x] x 5[y] samples from the scalar field, used for the indexed
   // baselevel buildup. A bit more care testing for valid Y so samples outside
   // will have a GL_CLAMP-ish behaviour, which we rely on to not produce
@@ -310,136 +333,43 @@ namespace {
     }
   }
 
-  template<class FieldType>
-  __global__ __launch_bounds__(32) void reduceBase(uint8_t* __restrict__           index_cases_d,
-                                                   uchar4* __restrict__            out_index_level0_d,
-                                                   uint32_t* __restrict__          out_index_sideband_d,
-                                                   const uint8_t* __restrict__     index_count,
-                                                   const FieldType* __restrict__   field_d,
-                                                   const size_t                    field_row_stride,
-                                                   const size_t                    field_slice_stride,
-                                                   const float                     threshold,
-                                                   const uint3                     chunks,
-                                                   const uint3                     grid_max_index)
-  {
-    const uint32_t warp = threadIdx.x / 32;
-    const uint32_t thread = threadIdx.x % 32;
-    const uint32_t chunk_ix = blockIdx.x + warp;
-
-    uint3 chunk = make_uint3(chunk_ix % chunks.x,
-                             (chunk_ix / chunks.x) % chunks.y,
-                             (chunk_ix / chunks.x) / chunks.y);
-    uint3 cell = make_uint3(31 * chunk.x + thread,
-                            5 * chunk.y,
-                            5 * chunk.z);
-
-    reduceBaseKernel<FieldType, false>(index_cases_d + static_cast<size_t>(5 * 32 * 5 * blockIdx.x + 5 * thread), // Index doesn't need more than 32 bits
-                                       out_index_level0_d + static_cast<size_t>(32 * 5 * blockIdx.x + thread),
-                                       nullptr,
-                                       out_index_sideband_d + static_cast<size_t>(32 * 5 * blockIdx.x + thread),
-                                       nullptr,
-                                       index_count,
-                                       field_d + cell.z * field_slice_stride
-                                       + cell.y * field_row_stride
-                                       + min(grid_max_index.x, cell.x),
-                                       field_row_stride,
-                                       field_slice_stride,
-                                       cell,
-                                       grid_max_index,
-                                       thread,
-                                       threshold);
-
-  }
-
-  template<class FieldType>
-  __global__ __launch_bounds__(32) void reduceBaseIndexed(uint8_t* __restrict__           index_cases_d,
-                                                          uchar4* __restrict__            out_vertex_level0_d,
-                                                          uint32_t* __restrict__          out_vertex_sideband_d,
-                                                          uchar4* __restrict__            out_index_level0_d,
-                                                          uint32_t* __restrict__          out_index_sideband_d,
-                                                          const uint8_t* __restrict__     index_count,
-                                                          const FieldType* __restrict__   field_d,
-                                                          const size_t                    field_row_stride,
-                                                          const size_t                    field_slice_stride,
-                                                          const float                     threshold,
-                                                          const uint3                     chunks,
-                                                          const uint3                     grid_max_index)
-  {
-    const uint32_t warp = threadIdx.x / 32;
-    const uint32_t thread = threadIdx.x % 32;
-    const uint32_t chunk_ix = blockIdx.x + warp;
-
-    // Figure out which chunk we are in.
-    // FIXME: Try to use grid extents to mach chunk grid to avoid all these modulo/divisions.
-    uint3 chunk = make_uint3(chunk_ix % chunks.x,
-                             (chunk_ix / chunks.x) % chunks.y,
-                             (chunk_ix / chunks.x) / chunks.y);
-    uint3 cell = make_uint3(31 * chunk.x + thread,
-                            5 * chunk.y,
-                            5 * chunk.z);
-
-    reduceBaseKernel<FieldType, true>(index_cases_d + static_cast<size_t>(5 * 32 * 5 * blockIdx.x + 5 * thread), // Index doesn't need more than 32 bits
-                                      out_index_level0_d + static_cast<size_t>(32 * 5 * blockIdx.x + thread),
-                                      out_vertex_level0_d + static_cast<size_t>(32 * 5 * blockIdx.x + thread),
-                                      out_index_sideband_d + static_cast<size_t>(32 * 5 * blockIdx.x + thread),
-                                      out_vertex_sideband_d + static_cast<size_t>(32 * 5 * blockIdx.x + thread),
-                                      index_count,
-                                      field_d + cell.z * field_slice_stride
-                                      + cell.y * field_row_stride
-                                      + min(grid_max_index.x, cell.x),
-                                      field_row_stride,
-                                      field_slice_stride,
-                                      cell,
-                                      grid_max_index,
-                                      thread,
-                                      threshold);
-  }
-
-  template<class FieldType>
-  __global__ __launch_bounds__(32 * 6) void reduceBaseIndexedMultiWarp(uint8_t* __restrict__           index_cases_d,
-                                                                       uchar4* __restrict__            out_vertex_level0_d,
-                                                                       uint32_t* __restrict__          out_vertex_sideband_d,
-                                                                       uchar4* __restrict__            out_index_level0_d,
-                                                                       uint32_t* __restrict__          out_index_sideband_d,
-                                                                       const uint8_t* __restrict__     index_count,
-                                                                       const FieldType* __restrict__   field_d,
-                                                                       const size_t                    field_row_stride,
-                                                                       const size_t                    field_slice_stride,
-                                                                       const float                     threshold,
-                                                                       const uint3                     chunks,
-                                                                       const uint3                     grid_max_index)
+  // Build just the base-level, uses 6 warps to process a chunk
+  template<class FieldType, bool indexed>
+  __global__ __launch_bounds__(32 * 6) void reduceBaseMultiWarp(uint8_t* __restrict__           index_cases_d,
+                                                                uchar4* __restrict__            vtx_outlevel0_d,
+                                                                uint32_t* __restrict__          vtx_sideband0_d,
+                                                                uchar4* __restrict__            idx_outlevel0_d,
+                                                                uint32_t* __restrict__          idx_sideband0_d,
+                                                                const uint8_t* __restrict__     index_count,
+                                                                const FieldType* __restrict__   field_d,
+                                                                const size_t                    field_row_stride,
+                                                                const size_t                    field_slice_stride,
+                                                                const float                     threshold,
+                                                                const uint3                     chunks,
+                                                                const uint3                     grid_max_index)
   {
     const uint32_t warp = threadIdx.x / 32;
     const uint32_t thread = threadIdx.x % 32;
     const uint32_t chunk_ix = blockIdx.x;
-    uint3 chunk = make_uint3(chunk_ix % chunks.x,
-                             (chunk_ix / chunks.x) % chunks.y,
-                             (chunk_ix / chunks.x) / chunks.y);
-    uint3 cell = make_uint3(31 * chunk.x + thread,
-                            5 * chunk.y,
-                            5 * chunk.z);
-
-    const FieldType* __restrict__ field_cell_d = field_d + (min(grid_max_index.z, cell.z) * field_slice_stride +
-                                                            min(grid_max_index.y, cell.y) * field_row_stride +
-                                                            min(grid_max_index.x, cell.x));
+    const uint3 cell = cellFromChunkIx(chunks, chunk_ix, thread);
+    const FieldType* __restrict__ field_cell_d = adjustFieldPtrToCell(field_d, field_row_stride, field_slice_stride, grid_max_index, cell);
 
     __shared__ float shmem[32 * 6 * 2];
 
-    reduceBaseKernelMultiWarp<FieldType, true, false>(index_cases_d + static_cast<size_t>(5 * 32 * 5 * blockIdx.x + 5 * thread), // Index doesn't need more than 32 bits
-                                                      out_index_level0_d + static_cast<size_t>(32 * 5 * blockIdx.x + thread),
-                                                      out_vertex_level0_d + static_cast<size_t>(32 * 5 * blockIdx.x + thread),
-                                                      out_index_sideband_d + static_cast<size_t>(32 * 5 * blockIdx.x + thread),
-                                                      out_vertex_sideband_d + static_cast<size_t>(32 * 5 * blockIdx.x + thread),
-                                                      shmem,
-                                                      index_count,
-                                                      field_cell_d,
-                                                      field_row_stride,
-                                                      field_slice_stride,
-                                                      cell,
-                                                      grid_max_index,
-                                                      warp,
-                                                      thread,
-                                                      threshold);
+    const uint32_t off_d = 32 * 5 * chunk_ix + thread;
+    reduceBaseKernelMultiWarp<FieldType, indexed, false>(index_cases_d + 5 * off_d,
+                                                        idx_outlevel0_d + off_d, indexed ? vtx_outlevel0_d + off_d : nullptr,
+                                                        idx_sideband0_d + off_d, indexed ? vtx_sideband0_d + off_d : nullptr,
+                                                        shmem,
+                                                        index_count,
+                                                        field_cell_d,
+                                                        field_row_stride,
+                                                        field_slice_stride,
+                                                        cell,
+                                                        grid_max_index,
+                                                        warp,
+                                                        thread,
+                                                        threshold);
   }
 
 
@@ -761,63 +691,39 @@ void ComputeStuff::MC::Internal::buildPyramid(Context* ctx,
   // Indexed pyramid buildup
   unsigned next_level = ~0u;
   switch (ctx->build_mode) {
-  case BaseLevelBuildMode::SingleLevelSingleWarp: {
-    uint32_t bn = ctx->chunk_total;
-    uint32_t tn = 32;
-    next_level = 1;
-    if (ctx->indexed) {
-      reduceBaseIndexed<float><<<bn, tn, 0, stream>>>(ctx->index_cases_d,                   // block writes 5*5*32=800 uint8's
-                                                            (uchar4*)(ctx->vertex_pyramid + ctx->level_offsets[0]), // block writes 5*32 uvec4's
-                                                            ctx->vertex_sidebands[0],                    // block writes 5*32 uint32's
-                                                            (uchar4*)(ctx->index_pyramid + ctx->level_offsets[0]), // block writes 5*32 uvec4's
-                                                            ctx->index_sidebands[0],                    // block writes 5*32 uint32's
-                                                            ctx->tables->index_count,
-                                                            field_d,
-                                                            size_t(field_size.x),
-                                                            size_t(field_size.x) * field_size.y,
-                                                            threshold,
-                                                            ctx->chunks,
-                                                            grid_max_index);
-    }
-    else {
-      reduceBase<float><<<bn, tn, 0, stream>>>(ctx->index_cases_d,                   // block writes 5*5*32=800 uint8's
-                                                (uchar4*)(ctx->index_pyramid + ctx->level_offsets[0]), // block writes 5*32 uvec4's
-                                                ctx->index_sidebands[0],                    // block writes 5*32 uint32's
-                                                ctx->tables->index_count,
-                                                field_d,
-                                                size_t(field_size.x),
-                                                size_t(field_size.x) * field_size.y,
-                                                threshold,
-                                                ctx->chunks,
-                                                grid_max_index);
-    }
-    break;
-  }
-  case BaseLevelBuildMode::SingleLevelMultiWarp: {
+  case BaseLevelBuildMode::SingleLevelMultiWarpChunk: {
     uint32_t bn = ctx->chunk_total;
     uint32_t tn = 32 * 6;
     next_level = 1;
     if (ctx->indexed) {
-      reduceBaseIndexedMultiWarp<float><<<bn, tn, 0, stream>>>(ctx->index_cases_d,                   // block writes 5*5*32=800 uint8's
-                                                                (uchar4*)(ctx->vertex_pyramid + ctx->level_offsets[0]), // block writes 5*32 uvec4's
-                                                                ctx->vertex_sidebands[0],                    // block writes 5*32 uint32's
-                                                                (uchar4*)(ctx->index_pyramid + ctx->level_offsets[0]), // block writes 5*32 uvec4's
-                                                                ctx->index_sidebands[0],                    // block writes 5*32 uint32's
-                                                                ctx->tables->index_count,
-                                                                field_d,
-                                                                size_t(field_size.x),
-                                                                size_t(field_size.x) * field_size.y,
-                                                                threshold,
-                                                                ctx->chunks,
-                                                                grid_max_index);
+      reduceBaseMultiWarp<float, true><<<bn, tn, 0, stream>>>(ctx->index_cases_d,                   // block writes 5*5*32=800 uint8's
+                                                              (uchar4*)(ctx->vertex_pyramid + ctx->level_offsets[0]), // block writes 5*32 uvec4's
+                                                              ctx->vertex_sidebands[0],                    // block writes 5*32 uint32's
+                                                              (uchar4*)(ctx->index_pyramid + ctx->level_offsets[0]), // block writes 5*32 uvec4's
+                                                              ctx->index_sidebands[0],                    // block writes 5*32 uint32's
+                                                              ctx->tables->index_count,
+                                                              field_d,
+                                                              size_t(field_size.x),
+                                                              size_t(field_size.x) * field_size.y,
+                                                              threshold,
+                                                              ctx->chunks,
+                                                              grid_max_index);
     }
     else {
-      // Not implemented
-      abort();
+      reduceBaseMultiWarp<float, false><<<bn, tn, 0, stream>>>(ctx->index_cases_d,
+                                                               nullptr, nullptr,
+                                                               (uchar4*)(ctx->index_pyramid + ctx->level_offsets[0]), ctx->index_sidebands[0],                    // block writes 5*32 uint32's
+                                                               ctx->tables->index_count,
+                                                               field_d,
+                                                               size_t(field_size.x),
+                                                               size_t(field_size.x) * field_size.y,
+                                                               threshold,
+                                                               ctx->chunks,
+                                                               grid_max_index);
     }
     break;
   }
-  case BaseLevelBuildMode::DoubleLevelMultiWarp: {
+  case BaseLevelBuildMode::DoubleLevelMultiWarpChunk: {
     uint32_t bn = ctx->chunk_total;
     uint32_t tn = 32 * 6;
     next_level = 2;
@@ -845,7 +751,7 @@ void ComputeStuff::MC::Internal::buildPyramid(Context* ctx,
     }
     break;
   }
-  case BaseLevelBuildMode::TripleLevelSingleWarp: {
+  case BaseLevelBuildMode::TripleLevelSingleWarpChunk: {
     uint32_t bn = (ctx->level_sizes[2] + 31) / 32;
     uint32_t tn = 32 * 5;
     next_level = 3;
