@@ -106,9 +106,10 @@ namespace {
     bool less_y = q.y < field_max_index.y;
     bool less_z = q.z < field_max_index.z;
 
-    q.x = less_x ? q.x : field_max_index.x;
-    q.y = less_y ? q.y : field_max_index.y;
-    q.z = less_z ? q.z : field_max_index.z;
+    // Should not be needed due to properly masking in baselevel
+    //q.x = less_x ? q.x : field_max_index.x;
+    //q.y = less_y ? q.y : field_max_index.y;
+    //q.z = less_z ? q.z : field_max_index.z;
     size_t o = q.x + q.y * field_row_stride + q.z * field_slice_stride;
 
     return make_float4(field[o + (less_x ? 1 : 0)],
